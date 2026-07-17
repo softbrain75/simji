@@ -2,3 +2,5 @@
 .detail-edit-hint { margin:-2px 0 19px; padding:12px 13px; color:#617167; background:#f0f4ef; border-radius:12px; font-size:12px; line-height:1.5; }
 .detail-person { margin:-5px 0 20px; color:#89938c; font-size:12px; }
 .detail-save { margin-top:0; }
+.delete-expense { width:100%; min-height:48px; margin-top:11px; color:#b24e42; background:#fff7f5; border:1px solid #efc9c3; border-radius:14px; font-size:14px; font-weight:700; }
+.delete-expense:disabled { opacity:.58; cursor:default; }

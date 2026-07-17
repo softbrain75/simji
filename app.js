@@ -22,6 +22,18 @@ let recordsCache = [];
 let toastTimer;
 
 function formatMoney(value) { return `₩${Number(value || 0).toLocaleString('ko-KR')}`; }
+function formatAmountInput(value) {
+  const digits = String(value || '').replace(/[^0-9]/g, '');
+  return digits ? Number(digits).toLocaleString('ko-KR') : '';
+}
+function parseAmountInput(value) { return Number(String(value || '').replace(/[^0-9]/g, '')); }
+function enableAmountCommas(input) {
+  if (!input) return;
+  input.type = 'text';
+  input.inputMode = 'numeric';
+  input.value = formatAmountInput(input.value);
+  input.addEventListener('input', () => { input.value = formatAmountInput(input.value); });
+}
 function formatDate(value) {
   const date = new Date(`${value}T00:00:00`);
   return `${date.getMonth() + 1}월 ${date.getDate()}일`;
@@ -128,7 +140,15 @@ function openDetail(record) {
     byId('detailType').textContent = 'EXPENSE';
     byId('detailTitle').textContent = record.memo || '영수증 지출';
     byId('detailContent').innerHTML = `<form class="detail-content detail-edit-form" id="detailEditForm">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-edit-hint">영수증을 보고 금액·날짜·메모를 고친 뒤 저장하세요.</p><label class="field">금액<input name="amount" type="number" min="1" max="100000000" inputmode="numeric" value="${Number(record.amount) || ''}" required /></label><label class="field">기록 날짜<input name="date" type="date" value="${escapeHtml(record.date)}" required /></label><label class="field field--last">메모 <span>(선택)</span><input name="memo" maxlength="80" value="${escapeHtml(record.memo || '')}" placeholder="예: 7월 정기모임 식사" /></label><p class="detail-person">지출 등록자 · ${escapeHtml(record.person || record.member || '')}</p><button class="save-expense detail-save" id="detailSaveButton" type="submit">수정 저장하기 <span>→</span></button></form>`;
-    byId('detailEditForm').addEventListener('submit', (event) => saveExpenseEdit(event, record));
+    const editForm = byId('detailEditForm');
+    enableAmountCommas(editForm.elements.amount);
+    editForm.addEventListener('submit', (event) => saveExpenseEdit(event, record));
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'delete-expense';
+    deleteButton.textContent = '이 지출 삭제하기';
+    deleteButton.addEventListener('click', () => deleteExpense(record, deleteButton));
+    editForm.append(deleteButton);
     byId('detailBackdrop').hidden = false;
     return;
   }
@@ -142,7 +162,7 @@ function openDetail(record) {
 async function saveExpenseEdit(event, record) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const amount = Number(form.get('amount'));
+  const amount = parseAmountInput(form.get('amount'));
   const date = String(form.get('date') || '');
   const memo = String(form.get('memo') || '').trim();
   if (!amount || !date) { showToast('금액과 날짜를 입력해 주세요.'); return; }
@@ -165,6 +185,28 @@ async function saveExpenseEdit(event, record) {
   } finally {
     button.disabled = false;
     button.innerHTML = '수정 저장하기 <span>→</span>';
+  }
+}
+
+async function deleteExpense(record, button) {
+  if (!window.confirm('이 지출 기록과 영수증 사진을 삭제할까요? 삭제 후에는 되돌릴 수 없어요.')) return;
+
+  button.disabled = true;
+  button.textContent = '삭제하는 중…';
+  try {
+    if (cloudMode) {
+      await api(`/expenses/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+    } else {
+      saveLocalRecords(getLocalRecords().filter((item) => item.id !== record.id));
+    }
+    byId('detailBackdrop').hidden = true;
+    await loadRecords();
+    showToast('지출 기록을 삭제했어요.');
+  } catch (error) {
+    showToast(error.message || '지출 기록을 삭제하지 못했어요.');
+  } finally {
+    button.disabled = false;
+    button.textContent = '이 지출 삭제하기';
   }
 }
 
@@ -226,7 +268,7 @@ byId('expenseForm').addEventListener('submit', async (event) => {
       await loadRecords();
       showToast(result.needsReview ? '영수증은 저장했어요. 금액을 한 번 확인해 주세요.' : '영수증을 읽고 지출을 자동 등록했어요.');
     } else {
-      const amount = Number(form.get('amount'));
+      const amount = parseAmountInput(form.get('amount'));
       const person = form.get('person').trim();
       const date = form.get('date');
       if (!amount || !person || !date) { showToast('금액과 날짜를 입력해 주세요.'); return; }
@@ -285,6 +327,7 @@ byId('monthLabel').textContent = `${new Date().getFullYear()}년 ${new Date().ge
 document.body.classList.toggle('cloud-mode', cloudMode);
 if (cloudMode) byId('saveExpenseButton').innerHTML = '영수증 읽고 자동 저장 <span>→</span>';
 setToday();
+enableAmountCommas(byId('expenseValue'));
 const savedMember = localStorage.getItem(memberStorageKey);
 const savedToken = localStorage.getItem(sessionStorageKey);
 if (members.includes(savedMember) && (!cloudMode || savedToken)) {

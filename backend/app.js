@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 
@@ -23,7 +23,7 @@ const response = (statusCode, body) => ({
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': allowedOrigin,
     'access-control-allow-headers': 'content-type,authorization',
-    'access-control-allow-methods': 'GET,POST,PATCH,OPTIONS',
+    'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   },
   body: JSON.stringify(body),
 });
@@ -220,6 +220,29 @@ async function updateExpense(event, member) {
   return response(200, { record: await publicRecord(updatedRecord) });
 }
 
+async function deleteExpense(event) {
+  const id = event.pathParameters?.id;
+  if (!id) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+
+  const record = await findExpense(id);
+  if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+
+  await ddb.send(new DeleteCommand({
+    TableName: tableName,
+    Key: { pk: record.pk, sk: record.sk },
+    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+  }));
+
+  if (record.receiptKey) {
+    try {
+      await s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: record.receiptKey }));
+    } catch (error) {
+      console.error('Receipt cleanup failed', error.message);
+    }
+  }
+  return response(200, { deleted: true });
+}
+
 exports.handler = async (event) => {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path = event.rawPath || event.path;
@@ -230,6 +253,7 @@ exports.handler = async (event) => {
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'POST' && path === '/expenses/scan') return await scanAndSave(event, member);
     if (method === 'PATCH' && /^\/expenses\/[^/]+$/.test(path)) return await updateExpense(event, member);
+    if (method === 'DELETE' && /^\/expenses\/[^/]+$/.test(path)) return await deleteExpense(event);
     return response(404, { message: '요청한 기능을 찾을 수 없습니다.' });
   } catch (error) {
     console.error(error);

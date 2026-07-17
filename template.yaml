@@ -31,6 +31,7 @@ Resources:
           - GET
           - POST
           - PATCH
+          - DELETE
           - OPTIONS
         AllowOrigins:
           - !Ref AllowedOrigin
@@ -119,6 +120,12 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /expenses/{id}
             Method: PATCH
+        DeleteExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /expenses/{id}
+            Method: DELETE
 
 Outputs:
   ApiUrl:

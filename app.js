@@ -10,6 +10,7 @@ const byId = (id) => document.getElementById(id);
 const storageKey = 'simji-ledger-v1';
 const memberStorageKey = 'simji-member-v1';
 const sessionStorageKey = 'simji-session-v1';
+const openingBalance = 1340278;
 const members = ['종남', '인기', '상훈', '민철', '공근', '성호'];
 const apiUrl = (window.SIMJI_CONFIG?.apiUrl || '').replace(/\/$/, '');
 const cloudMode = Boolean(apiUrl);
@@ -76,8 +77,8 @@ function render() {
   byId('incomeAmount').textContent = formatMoney(income);
   byId('expenseAmount').textContent = formatMoney(expense);
   byId('recordCount').textContent = `${records.length}건`;
-  byId('balanceAmount').textContent = income ? formatMoney(income - expense) : '입금 내역 필요';
-  byId('balanceHint').textContent = income ? '계좌 거래내역 기준으로 계산한 금액이에요.' : '계좌 거래내역 엑셀을 올리면 잔액을 계산해요.';
+  byId('balanceAmount').textContent = formatMoney(openingBalance + income - expense);
+  byId('balanceHint').textContent = `기초 잔액 ${formatMoney(openingBalance)} + 입금 − 지출 기준이에요.`;
 
   const filtered = records.filter((record) => activeFilter === 'all' || record.type === activeFilter);
   byId('ledger').innerHTML = filtered.map((record) => {

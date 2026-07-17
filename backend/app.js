@@ -100,6 +100,21 @@ async function analyzeReceipt(imageBytes) {
   return { merchant, amount, date, needsReview: !amount || result.confidence !== 'high' };
 }
 
+async function analyzeIncome(imageBytes) {
+  const prompt = `당신은 한국 통장 거래내역 화면을 읽는 장부 도우미입니다. 사진에서 실제 입금 거래 한 건의 입금자 이름, 입금일, 입금 금액을 추출하세요. 통장 잔액이나 출금 금액이 아니라 입금으로 표시된 실제 거래 금액만 amount에 넣으세요. 입금자 이름을 알 수 없으면 null로 표시하세요. 반드시 설명 없이 아래 JSON만 반환하세요.\n{"sender":"입금자 이름 또는 null","date":"YYYY-MM-DD 또는 null","amount":정수 또는 null,"confidence":"high 또는 low"}`;
+  const output = await bedrock.send(new ConverseCommand({
+    modelId,
+    messages: [{ role: 'user', content: [{ image: { format: 'jpeg', source: { bytes: imageBytes } } }, { text: prompt }] }],
+    inferenceConfig: { maxTokens: 220, temperature: 0 },
+  }));
+  const text = output.output.message.content.map((part) => part.text || '').join('');
+  const result = readModelJson(text);
+  const sender = typeof result.sender === 'string' && result.sender.trim() ? result.sender.trim().slice(0, 40) : '입금자 확인 필요';
+  const amount = normalizeAmount(result.amount);
+  const date = normalizeDate(result.date);
+  return { sender, amount, date, needsReview: !amount || result.confidence !== 'high' };
+}
+
 async function publicRecord(record) {
   const proofUrl = record.receiptKey
     ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucketName, Key: record.receiptKey }), { expiresIn: 60 * 30 })
@@ -154,6 +169,37 @@ async function scanAndSave(event, member) {
     person: member,
     refundBank,
     refundAccount,
+    receiptKey,
+    needsReview: analyzed.needsReview,
+    createdAt: new Date().toISOString(),
+  };
+  await ddb.send(new PutCommand({ TableName: tableName, Item: record }));
+  return response(201, { record: await publicRecord(record), needsReview: record.needsReview });
+}
+
+async function scanIncomeAndSave(event) {
+  const { imageBase64, mimeType } = parseBody(event);
+  if (!imageBase64 || !/^image\//.test(mimeType || '')) return response(400, { message: '입금 내역 사진이 필요합니다.' });
+  const imageBytes = Buffer.from(imageBase64, 'base64');
+  if (!imageBytes.length || imageBytes.length > 6 * 1024 * 1024) return response(400, { message: '사진은 6MB 이하로 올려 주세요.' });
+
+  const id = crypto.randomUUID();
+  const receiptKey = `incomes/${todayInKorea().slice(0, 7)}/${id}.jpg`;
+  await s3.send(new PutObjectCommand({ Bucket: bucketName, Key: receiptKey, Body: imageBytes, ContentType: 'image/jpeg', ServerSideEncryption: 'AES256' }));
+
+  let analyzed = { sender: '입금자 확인 필요', amount: 0, date: todayInKorea(), needsReview: true };
+  try { analyzed = await analyzeIncome(imageBytes); }
+  catch (error) { console.error('Income analysis failed', error.message); }
+
+  const record = {
+    pk: 'SIMJI',
+    sk: `INCOME#${analyzed.date}#${id}`,
+    id,
+    type: 'income',
+    amount: analyzed.amount,
+    date: analyzed.date,
+    memo: '회비 입금',
+    person: analyzed.sender,
     receiptKey,
     needsReview: analyzed.needsReview,
     createdAt: new Date().toISOString(),
@@ -274,6 +320,7 @@ exports.handler = async (event) => {
     const member = getSessionMember(event);
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'POST' && path === '/expenses/scan') return await scanAndSave(event, member);
+    if (method === 'POST' && path === '/incomes/scan') return await scanIncomeAndSave(event);
     if (method === 'PATCH' && /^\/expenses\/[^/]+$/.test(path)) return await updateExpense(event, member);
     if (method === 'DELETE' && /^\/expenses\/[^/]+$/.test(path)) return await deleteExpense(event, member);
     return response(404, { message: '요청한 기능을 찾을 수 없습니다.' });

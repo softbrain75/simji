@@ -16,6 +16,7 @@ const apiUrl = (window.SIMJI_CONFIG?.apiUrl || '').replace(/\/$/, '');
 const cloudMode = Boolean(apiUrl);
 
 let selectedFile = null;
+let selectedIncomeFile = null;
 let activeFilter = 'all';
 let activeMember = '';
 let recordsCache = [];
@@ -82,6 +83,12 @@ async function loadRecords() {
   }
 }
 
+function updateCreateButton() {
+  byId('openExpense').innerHTML = activeFilter === 'income'
+    ? '<span>↓</span> 입금 기록 입력'
+    : '<span>＋</span> 영수증으로 지출 등록';
+}
+
 function render() {
   const records = [...recordsCache].sort((a, b) => new Date(b.date) - new Date(a.date));
   const income = records.filter((record) => record.type === 'income').reduce((sum, record) => sum + Number(record.amount || 0), 0);
@@ -94,27 +101,38 @@ function render() {
 
   const filtered = records.filter((record) => activeFilter === 'all' || record.type === activeFilter);
   byId('ledger').innerHTML = filtered.map((record) => {
-    const label = record.type === 'income' ? '회비 입금' : (record.memo || '영수증 지출');
-    const person = record.type === 'income' ? '계좌 거래내역' : `${record.person || record.member} · 증빙 사진 있음`;
+    const label = record.type === 'income' ? (record.memo || '회비 입금') : (record.memo || '영수증 지출');
+    const person = record.type === 'income' ? `${record.person || '입금자 확인 필요'} · 입금 증빙 사진 있음` : `${record.person || record.member} · 증빙 사진 있음`;
     const proofUrl = record.proofUrl || record.proof;
     const icon = proofUrl ? `<img src="${proofUrl}" alt="" />` : record.type === 'income' ? '↓' : '⌑';
     return `<button class="ledger-row ledger-row--${record.type}" data-id="${record.id}"><span class="ledger-row__icon">${icon}</span><span class="ledger-row__main"><b>${escapeHtml(label)}</b><span>${escapeHtml(person)} · ${formatDate(record.date)}</span></span><span class="ledger-row__amount"><b>${record.type === 'income' ? '+' : '−'}${formatMoney(record.amount)}</b><span>${record.type === 'income' ? '입금' : '영수증'}</span></span></button>`;
   }).join('');
   byId('emptyState').hidden = filtered.length > 0;
+  updateCreateButton();
 }
 
 function openExpense() {
+  if (activeFilter === 'income') { openIncome(); return; }
   byId('expenseBackdrop').hidden = false;
   byId('expensePerson').value = activeMember;
   setToday();
 }
 function closeExpense() { byId('expenseBackdrop').hidden = true; }
+function openIncome() { byId('incomeBackdrop').hidden = false; }
+function closeIncome() { byId('incomeBackdrop').hidden = true; }
 function clearReceipt() {
   selectedFile = null;
   byId('receiptInput').value = '';
   byId('receiptPreview').hidden = true;
   byId('previewImage').src = '';
 }
+function clearIncomeImage() {
+  selectedIncomeFile = null;
+  byId('incomeInput').value = '';
+  byId('incomePreview').hidden = true;
+  byId('incomePreviewImage').src = '';
+}
+
 function compressImage(file) {
   return new Promise((resolve, reject) => {
     const source = new Image();
@@ -161,7 +179,7 @@ function openDetail(record) {
   const proofUrl = record.proofUrl || record.proof;
   byId('detailType').textContent = record.type === 'income' ? 'INCOME' : 'EXPENSE';
   byId('detailTitle').textContent = record.type === 'income' ? '회비 입금' : (record.memo || '영수증 지출');
-  byId('detailContent').innerHTML = `<div class="detail-content">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-amount">${record.type === 'income' ? '+' : '−'}${formatMoney(record.amount)}</p><dl class="detail-list"><div><dt>기록 날짜</dt><dd>${formatDate(record.date)}</dd></div><div><dt>${record.type === 'income' ? '확인 방식' : '지출한 사람'}</dt><dd>${escapeHtml(record.type === 'income' ? '계좌 거래내역' : (record.person || record.member))}</dd></div>${record.memo ? `<div><dt>메모</dt><dd>${escapeHtml(record.memo)}</dd></div>` : ''}</dl></div>`;
+  byId('detailContent').innerHTML = `<div class="detail-content">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 ${record.type === 'income' ? '입금 내역' : '영수증'}" />` : ''}<p class="detail-amount">${record.type === 'income' ? '+' : '−'}${formatMoney(record.amount)}</p><dl class="detail-list"><div><dt>기록 날짜</dt><dd>${formatDate(record.date)}</dd></div><div><dt>${record.type === 'income' ? '입금자' : '지출한 사람'}</dt><dd>${escapeHtml(record.type === 'income' ? (record.person || '입금자 확인 필요') : (record.person || record.member))}</dd></div>${record.memo ? `<div><dt>메모</dt><dd>${escapeHtml(record.memo)}</dd></div>` : ''}</dl></div>`;
   byId('detailBackdrop').hidden = false;
 }
 
@@ -242,6 +260,7 @@ function signOut(focus = true) {
 
 byId('openExpense').addEventListener('click', openExpense);
 byId('closeExpense').addEventListener('click', closeExpense);
+byId('closeIncome').addEventListener('click', closeIncome);
 byId('closeDetail').addEventListener('click', () => { byId('detailBackdrop').hidden = true; });
 document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.addEventListener('click', (event) => { if (event.target === backdrop) backdrop.hidden = true; }));
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') document.querySelectorAll('.modal-backdrop').forEach((backdrop) => { backdrop.hidden = true; }); });
@@ -255,6 +274,16 @@ byId('receiptInput').addEventListener('change', (event) => {
   byId('receiptPreview').hidden = false;
 });
 byId('removeReceipt').addEventListener('click', clearReceipt);
+
+byId('incomeInput').addEventListener('change', (event) => {
+  const [file] = event.target.files;
+  if (!file) return;
+  selectedIncomeFile = file;
+  byId('incomePreviewImage').src = URL.createObjectURL(file);
+  byId('incomeFileName').textContent = file.name.length > 24 ? `${file.name.slice(0, 21)}…` : file.name;
+  byId('incomePreview').hidden = false;
+});
+byId('removeIncome').addEventListener('click', clearIncomeImage);
 
 byId('expenseForm').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -298,6 +327,34 @@ byId('expenseForm').addEventListener('submit', async (event) => {
   } finally {
     button.disabled = false;
     button.innerHTML = cloudMode ? '영수증 읽고 자동 저장 <span>→</span>' : '지출 저장하기 <span>→</span>';
+  }
+});
+
+byId('incomeForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!selectedIncomeFile) { showToast('통장 입금 내역 사진을 선택해 주세요.'); return; }
+  if (!cloudMode) { showToast('입금 자동 기록은 AWS 연결 후 사용할 수 있어요.'); return; }
+
+  const formElement = event.currentTarget;
+  const button = byId('saveIncomeButton');
+  button.disabled = true;
+  button.textContent = '입금 내역 읽는 중…';
+  try {
+    const proof = await compressImage(selectedIncomeFile);
+    const result = await api('/incomes/scan', {
+      method: 'POST',
+      body: { imageBase64: proof.split(',')[1], mimeType: 'image/jpeg' },
+    });
+    formElement.reset();
+    clearIncomeImage();
+    closeIncome();
+    await loadRecords();
+    showToast(result.needsReview ? '입금 내역은 저장했어요. 날짜와 금액을 확인해 주세요.' : '입금 내역을 읽고 자동 등록했어요.');
+  } catch (error) {
+    showToast(error.message || '입금 내역을 저장하지 못했어요. 다시 시도해 주세요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '입금 내역 읽고 자동 저장 <span>→</span>';
   }
 });
 

@@ -114,6 +114,12 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /expenses/scan
             Method: POST
+        ScanIncome:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /incomes/scan
+            Method: POST
         UpdateExpense:
           Type: HttpApi
           Properties:

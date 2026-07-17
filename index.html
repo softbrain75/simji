@@ -51,7 +51,7 @@
       </section>
 
       <section class="ledger-section">
-        <div class="section-title"><div><p>LEDGER</p><h2>기록</h2></div><span id="recordCount">0건</span></div>
+        <div class="section-title"><div><h2>거래내역</h2></div><span id="recordCount">0건</span></div>
         <nav class="filters" aria-label="기록 필터">
           <button class="filter is-active" data-filter="all">전체</button>
           <button class="filter" data-filter="income">입금</button>
@@ -101,6 +101,28 @@
             <label class="field field--last">메모 <span>(선택)</span><input name="memo" maxlength="30" placeholder="예: 7월 정기모임 식사" /></label>
           </div>
           <button class="save-expense" id="saveExpenseButton" type="submit">지출 저장하기 <span>→</span></button>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="incomeBackdrop" hidden>
+      <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="incomeTitle">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header"><div><p>NEW INCOME</p><h2 id="incomeTitle">입금 기록 등록</h2></div><button class="close" id="closeIncome" aria-label="닫기">×</button></div>
+        <form id="incomeForm">
+          <input id="incomeInput" name="incomeImage" type="file" accept="image/*" hidden />
+          <label class="receipt-picker" for="incomeInput">
+            <span class="receipt-picker__camera">↓</span>
+            <span><b>통장 입금 내역 사진</b><small>사진앨범에서 입금 내역을 선택하세요</small></span>
+            <span class="receipt-picker__arrow">›</span>
+          </label>
+          <div class="receipt-preview" id="incomePreview" hidden>
+            <img id="incomePreviewImage" alt="선택한 입금 내역 미리보기" />
+            <span><b id="incomeFileName">입금 내역 사진</b><small>입금자·날짜·금액을 읽어 기록합니다</small></span>
+            <button type="button" id="removeIncome" aria-label="사진 제거">×</button>
+          </div>
+          <p class="scan-note">통장 입금 사진에서 입금자, 입금 날짜, 금액을 자동으로 기록합니다.</p>
+          <button class="save-expense" id="saveIncomeButton" type="submit">입금 내역 읽고 자동 저장 <span>→</span></button>
         </form>
       </section>
     </div>

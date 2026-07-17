@@ -69,7 +69,7 @@ Resources:
     Properties:
       CodeUri: backend/
       Handler: app.handler
-      Runtime: nodejs20.x
+      Runtime: nodejs24.x
       MemorySize: 1024
       Timeout: 30
       Environment:

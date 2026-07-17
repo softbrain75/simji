@@ -42,19 +42,13 @@
       <section class="balance-card" aria-label="이번 달 통장 요약">
         <div class="balance-card__head"><p>이번 달 통장 잔액</p><span id="monthLabel">2026년 7월</span></div>
         <strong class="balance-card__amount" id="balanceAmount">입금 내역 필요</strong>
-        <p class="balance-card__hint" id="balanceHint">계좌 거래내역 엑셀을 올리면 잔액을 계산해요.</p>
+        <p class="balance-card__hint" id="balanceHint">기초 잔액과 기록한 지출 기준이에요.</p>
         <div class="summary-line">
           <span>들어온 돈 <b id="incomeAmount">₩0</b></span>
           <i></i>
           <span>나간 돈 <b id="expenseAmount">₩0</b></span>
         </div>
       </section>
-
-      <button class="bank-note" id="bankNote" aria-label="입금 내역 업로드 안내">
-        <span class="bank-note__icon">↓</span>
-        <span><b>입금 내역은 은행 엑셀로 확인해요</b><small>계좌 거래내역 업로드 기능 · 준비 중</small></span>
-        <span class="bank-note__arrow">›</span>
-      </button>
 
       <section class="ledger-section">
         <div class="section-title"><div><p>LEDGER</p><h2>기록</h2></div><span id="recordCount">0건</span></div>
@@ -79,7 +73,7 @@
         <div class="sheet-handle"></div>
         <div class="sheet-header"><div><p>NEW EXPENSE</p><h2 id="expenseTitle">영수증 지출 등록</h2></div><button class="close" id="closeExpense" aria-label="닫기">×</button></div>
         <form id="expenseForm">
-          <input id="receiptInput" name="receipt" type="file" accept="image/*" capture="environment" hidden />
+          <input id="receiptInput" name="receipt" type="file" accept="image/*" hidden />
           <label class="receipt-picker" for="receiptInput" id="receiptPicker">
             <span class="receipt-picker__camera">⌑</span>
             <span><b>영수증 또는 카드 전표 사진</b><small>사진을 찍거나 앨범에서 선택하세요</small></span>
@@ -91,6 +85,13 @@
             <button type="button" id="removeReceipt" aria-label="사진 제거">×</button>
           </div>
           <p class="scan-note">사진을 읽어 상호·날짜·금액을 자동으로 장부에 기록합니다.</p>
+          <div class="refund-fields">
+            <p class="refund-title">환불 받을 계좌</p>
+            <div class="two-fields">
+              <label class="field">은행명<input name="refundBank" maxlength="20" autocomplete="off" placeholder="예: 국민" required /></label>
+              <label class="field">계좌번호<input name="refundAccount" inputmode="numeric" maxlength="30" autocomplete="off" placeholder="숫자만 입력" required /></label>
+            </div>
+          </div>
           <div class="manual-fields">
             <label class="field">금액<input id="expenseValue" name="amount" type="number" min="1" inputmode="numeric" placeholder="영수증 금액을 입력하세요" /></label>
             <div class="two-fields">

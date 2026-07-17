@@ -67,6 +67,10 @@ function normalizeAmount(value) {
   return digits ? Number(digits) : 0;
 }
 
+function normalizeRefundBank(value) { return String(value || '').trim().slice(0, 20); }
+function normalizeRefundAccount(value) { return String(value || '').replace(/\s/g, '').slice(0, 30); }
+function isValidRefundAccount(value) { return /^[0-9-]{6,30}$/.test(value); }
+
 function normalizeDate(value) {
   const text = String(value || '').trim();
   const matched = text.match(/(20\d{2}|\d{2})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})/);
@@ -100,7 +104,7 @@ async function publicRecord(record) {
   const proofUrl = record.receiptKey
     ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucketName, Key: record.receiptKey }), { expiresIn: 60 * 30 })
     : undefined;
-  return { id: record.id, type: record.type, amount: record.amount, date: record.date, memo: record.memo, person: record.person, needsReview: record.needsReview, proofUrl };
+  return { id: record.id, type: record.type, amount: record.amount, date: record.date, memo: record.memo, person: record.person, refundBank: record.refundBank, refundAccount: record.refundAccount, needsReview: record.needsReview, proofUrl };
 }
 
 async function authenticate(event) {
@@ -122,10 +126,14 @@ async function listRecords() {
 }
 
 async function scanAndSave(event, member) {
-  const { imageBase64, mimeType } = parseBody(event);
+  const { imageBase64, mimeType, refundBank: rawRefundBank, refundAccount: rawRefundAccount } = parseBody(event);
   if (!imageBase64 || !/^image\//.test(mimeType || '')) return response(400, { message: '영수증 사진이 필요합니다.' });
   const imageBytes = Buffer.from(imageBase64, 'base64');
   if (!imageBytes.length || imageBytes.length > 6 * 1024 * 1024) return response(400, { message: '사진은 6MB 이하로 올려 주세요.' });
+
+  const refundBank = normalizeRefundBank(rawRefundBank);
+  const refundAccount = normalizeRefundAccount(rawRefundAccount);
+  if (!refundBank || !isValidRefundAccount(refundAccount)) return response(400, { message: '환불 받을 은행명과 계좌번호를 확인해 주세요.' });
 
   const id = crypto.randomUUID();
   const receiptKey = `receipts/${todayInKorea().slice(0, 7)}/${id}.jpg`;
@@ -144,6 +152,8 @@ async function scanAndSave(event, member) {
     date: analyzed.date,
     memo: analyzed.merchant,
     person: member,
+    refundBank,
+    refundAccount,
     receiptKey,
     needsReview: analyzed.needsReview,
     createdAt: new Date().toISOString(),
@@ -183,16 +193,22 @@ async function updateExpense(event, member) {
   const record = await findExpense(id);
   if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
 
-  const { amount: rawAmount, date, memo = '' } = parseBody(event);
+  const { amount: rawAmount, date, memo = '', refundBank: rawRefundBank, refundAccount: rawRefundAccount } = parseBody(event);
   const amount = normalizeAmount(rawAmount);
   if (!amount || amount > 100000000) return response(400, { message: '금액을 확인해 주세요.' });
   if (!isValidDate(date)) return response(400, { message: '날짜를 확인해 주세요.' });
+
+  const refundBank = rawRefundBank === undefined ? (record.refundBank || '') : normalizeRefundBank(rawRefundBank);
+  const refundAccount = rawRefundAccount === undefined ? (record.refundAccount || '') : normalizeRefundAccount(rawRefundAccount);
+  if ((refundBank || refundAccount) && (!refundBank || !isValidRefundAccount(refundAccount))) return response(400, { message: '환불 받을 은행명과 계좌번호를 확인해 주세요.' });
 
   const updatedRecord = {
     ...record,
     amount,
     date,
     memo: String(memo).trim().slice(0, 80),
+    refundBank,
+    refundAccount,
     needsReview: false,
     updatedAt: new Date().toISOString(),
     updatedBy: member,
@@ -200,17 +216,21 @@ async function updateExpense(event, member) {
   await ddb.send(new UpdateCommand({
     TableName: tableName,
     Key: { pk: record.pk, sk: record.sk },
-    UpdateExpression: 'SET #amount = :amount, #date = :date, #memo = :memo, #needsReview = :needsReview, updatedAt = :updatedAt, updatedBy = :updatedBy',
+    UpdateExpression: 'SET #amount = :amount, #date = :date, #memo = :memo, #refundBank = :refundBank, #refundAccount = :refundAccount, #needsReview = :needsReview, updatedAt = :updatedAt, updatedBy = :updatedBy',
     ExpressionAttributeNames: {
       '#amount': 'amount',
       '#date': 'date',
       '#memo': 'memo',
+      '#refundBank': 'refundBank',
+      '#refundAccount': 'refundAccount',
       '#needsReview': 'needsReview',
     },
     ExpressionAttributeValues: {
       ':amount': updatedRecord.amount,
       ':date': updatedRecord.date,
       ':memo': updatedRecord.memo,
+      ':refundBank': updatedRecord.refundBank,
+      ':refundAccount': updatedRecord.refundAccount,
       ':needsReview': updatedRecord.needsReview,
       ':updatedAt': updatedRecord.updatedAt,
       ':updatedBy': updatedRecord.updatedBy,
@@ -220,12 +240,14 @@ async function updateExpense(event, member) {
   return response(200, { record: await publicRecord(updatedRecord) });
 }
 
-async function deleteExpense(event) {
+async function deleteExpense(event, member) {
   const id = event.pathParameters?.id;
   if (!id) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
 
   const record = await findExpense(id);
   if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+
+  if (record.person !== member) return response(403, { message: '지출을 등록한 멤버만 삭제할 수 있습니다.' });
 
   await ddb.send(new DeleteCommand({
     TableName: tableName,
@@ -253,7 +275,7 @@ exports.handler = async (event) => {
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'POST' && path === '/expenses/scan') return await scanAndSave(event, member);
     if (method === 'PATCH' && /^\/expenses\/[^/]+$/.test(path)) return await updateExpense(event, member);
-    if (method === 'DELETE' && /^\/expenses\/[^/]+$/.test(path)) return await deleteExpense(event);
+    if (method === 'DELETE' && /^\/expenses\/[^/]+$/.test(path)) return await deleteExpense(event, member);
     return response(404, { message: '요청한 기능을 찾을 수 없습니다.' });
   } catch (error) {
     console.error(error);

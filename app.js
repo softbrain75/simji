@@ -90,7 +90,7 @@ function render() {
   byId('expenseAmount').textContent = formatMoney(expense);
   byId('recordCount').textContent = `${records.length}건`;
   byId('balanceAmount').textContent = formatMoney(openingBalance + income - expense);
-  byId('balanceHint').textContent = `기초 잔액 ${formatMoney(openingBalance)} + 입금 − 지출 기준이에요.`;
+  byId('balanceHint').textContent = `기초 잔액 ${formatMoney(openingBalance)}과 기록한 지출 기준이에요.`;
 
   const filtered = records.filter((record) => activeFilter === 'all' || record.type === activeFilter);
   byId('ledger').innerHTML = filtered.map((record) => {
@@ -142,13 +142,19 @@ function openDetail(record) {
     byId('detailContent').innerHTML = `<form class="detail-content detail-edit-form" id="detailEditForm">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-edit-hint">영수증을 보고 금액·날짜·메모를 고친 뒤 저장하세요.</p><label class="field">금액<input name="amount" type="number" min="1" max="100000000" inputmode="numeric" value="${Number(record.amount) || ''}" required /></label><label class="field">기록 날짜<input name="date" type="date" value="${escapeHtml(record.date)}" required /></label><label class="field field--last">메모 <span>(선택)</span><input name="memo" maxlength="80" value="${escapeHtml(record.memo || '')}" placeholder="예: 7월 정기모임 식사" /></label><p class="detail-person">지출 등록자 · ${escapeHtml(record.person || record.member || '')}</p><button class="save-expense detail-save" id="detailSaveButton" type="submit">수정 저장하기 <span>→</span></button></form>`;
     const editForm = byId('detailEditForm');
     enableAmountCommas(editForm.elements.amount);
+    const refundFields = document.createElement('div');
+    refundFields.className = 'refund-fields detail-refund-fields';
+    refundFields.innerHTML = `<p class="refund-title">환불 받을 계좌</p><div class="two-fields"><label class="field">은행명<input name="refundBank" maxlength="20" autocomplete="off" value="${escapeHtml(record.refundBank || '')}" placeholder="예: 국민" /></label><label class="field">계좌번호<input name="refundAccount" inputmode="numeric" maxlength="30" autocomplete="off" value="${escapeHtml(record.refundAccount || '')}" placeholder="숫자만 입력" /></label></div>`;
+    editForm.insertBefore(refundFields, editForm.querySelector('.detail-person'));
     editForm.addEventListener('submit', (event) => saveExpenseEdit(event, record));
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'delete-expense';
-    deleteButton.textContent = '이 지출 삭제하기';
-    deleteButton.addEventListener('click', () => deleteExpense(record, deleteButton));
-    editForm.append(deleteButton);
+    if (record.person === activeMember) {
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'delete-expense';
+      deleteButton.textContent = '이 지출 삭제하기';
+      deleteButton.addEventListener('click', () => deleteExpense(record, deleteButton));
+      editForm.append(deleteButton);
+    }
     byId('detailBackdrop').hidden = false;
     return;
   }
@@ -165,16 +171,19 @@ async function saveExpenseEdit(event, record) {
   const amount = parseAmountInput(form.get('amount'));
   const date = String(form.get('date') || '');
   const memo = String(form.get('memo') || '').trim();
+  const refundBank = String(form.get('refundBank') || '').trim();
+  const refundAccount = String(form.get('refundAccount') || '').replace(/\s/g, '');
   if (!amount || !date) { showToast('금액과 날짜를 입력해 주세요.'); return; }
+  if (Boolean(refundBank) !== Boolean(refundAccount)) { showToast('은행명과 계좌번호를 함께 입력해 주세요.'); return; }
 
   const button = byId('detailSaveButton');
   button.disabled = true;
   button.textContent = '수정 저장 중…';
   try {
     if (cloudMode) {
-      await api(`/expenses/${encodeURIComponent(record.id)}`, { method: 'PATCH', body: { amount, date, memo } });
+      await api(`/expenses/${encodeURIComponent(record.id)}`, { method: 'PATCH', body: { amount, date, memo, refundBank, refundAccount } });
     } else {
-      const records = getLocalRecords().map((item) => (item.id === record.id ? { ...item, amount, date, memo, needsReview: false } : item));
+      const records = getLocalRecords().map((item) => (item.id === record.id ? { ...item, amount, date, memo, refundBank, refundAccount, needsReview: false } : item));
       saveLocalRecords(records);
     }
     byId('detailBackdrop').hidden = true;
@@ -252,6 +261,9 @@ byId('expenseForm').addEventListener('submit', async (event) => {
   if (!selectedFile) { showToast('영수증 또는 카드 전표 사진을 선택해 주세요.'); return; }
   const formElement = event.currentTarget;
   const form = new FormData(formElement);
+  const refundBank = String(form.get('refundBank') || '').trim();
+  const refundAccount = String(form.get('refundAccount') || '').replace(/\s/g, '');
+  if (!refundBank || !refundAccount) { showToast('환불 받을 은행명과 계좌번호를 입력해 주세요.'); return; }
   const button = byId('saveExpenseButton');
   button.disabled = true;
   button.textContent = cloudMode ? '영수증 읽는 중…' : '사진 저장 중…';
@@ -260,7 +272,7 @@ byId('expenseForm').addEventListener('submit', async (event) => {
     if (cloudMode) {
       const result = await api('/expenses/scan', {
         method: 'POST',
-        body: { imageBase64: proof.split(',')[1], mimeType: 'image/jpeg' },
+        body: { imageBase64: proof.split(',')[1], mimeType: 'image/jpeg', refundBank, refundAccount },
       });
       formElement.reset();
       clearReceipt();
@@ -273,7 +285,7 @@ byId('expenseForm').addEventListener('submit', async (event) => {
       const date = form.get('date');
       if (!amount || !person || !date) { showToast('금액과 날짜를 입력해 주세요.'); return; }
       const records = getLocalRecords();
-      records.push({ id: crypto.randomUUID(), type: 'expense', amount, person, date, memo: form.get('memo').trim(), proof });
+      records.push({ id: crypto.randomUUID(), type: 'expense', amount, person, date, memo: form.get('memo').trim(), refundBank, refundAccount, proof });
       saveLocalRecords(records);
       formElement.reset();
       clearReceipt();
@@ -299,7 +311,6 @@ byId('ledger').addEventListener('click', (event) => {
   const row = event.target.closest('.ledger-row');
   if (row) openDetail(recordsCache.find((record) => record.id === row.dataset.id));
 });
-byId('bankNote').addEventListener('click', () => showToast('다음 단계에서 계좌 거래내역 엑셀 업로드를 연결할게요.'));
 byId('memberButton').addEventListener('click', () => {
   if (window.confirm('다른 멤버로 이 기기를 사용할까요?')) signOut();
 });

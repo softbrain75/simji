@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f8f4" />
+    <title>심지회 · 모임 통장</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
+      <div class="login-card">
+        <span class="login-mark">心</span>
+        <p class="login-eyebrow">SIMJI CLUB</p>
+        <h1 id="loginTitle">심지회<br />공동 장부</h1>
+        <p class="login-copy">처음 한 번만 확인하면<br />이 기기에서는 계속 사용할 수 있어요.</p>
+        <form class="login-form" id="loginForm">
+          <label for="memberCode">멤버 이름 + 0717</label>
+          <input id="memberCode" autocomplete="off" placeholder="예: 종남0717" required />
+          <p class="login-error" id="loginError" hidden>멤버 이름 또는 비밀번호를 확인해 주세요.</p>
+          <button type="submit">심지회 장부 열기 <span>→</span></button>
+        </form>
+        <p class="login-note">심지회 멤버 전용 기록장입니다.</p>
+      </div>
+    </section>
+
+    <main class="app-shell" id="appShell" hidden>
+      <header class="header">
+        <div class="brand"><span class="brand-mark">心</span><div><h1>심지회</h1><p>모임 통장 기록</p></div></div>
+        <button class="member-button" id="memberButton" aria-label="사용 멤버 바꾸기"><span id="memberInitial">나</span><b id="memberName">멤버</b></button>
+      </header>
+
+      <section class="balance-card" aria-label="이번 달 통장 요약">
+        <div class="balance-card__head"><p>이번 달 통장 잔액</p><span id="monthLabel">2026년 7월</span></div>
+        <strong class="balance-card__amount" id="balanceAmount">입금 내역 필요</strong>
+        <p class="balance-card__hint" id="balanceHint">계좌 거래내역 엑셀을 올리면 잔액을 계산해요.</p>
+        <div class="summary-line">
+          <span>들어온 돈 <b id="incomeAmount">₩0</b></span>
+          <i></i>
+          <span>나간 돈 <b id="expenseAmount">₩0</b></span>
+        </div>
+      </section>
+
+      <button class="bank-note" id="bankNote" aria-label="입금 내역 업로드 안내">
+        <span class="bank-note__icon">↓</span>
+        <span><b>입금 내역은 은행 엑셀로 확인해요</b><small>계좌 거래내역 업로드 기능 · 준비 중</small></span>
+        <span class="bank-note__arrow">›</span>
+      </button>
+
+      <section class="ledger-section">
+        <div class="section-title"><div><p>LEDGER</p><h2>기록</h2></div><span id="recordCount">0건</span></div>
+        <nav class="filters" aria-label="기록 필터">
+          <button class="filter is-active" data-filter="all">전체</button>
+          <button class="filter" data-filter="income">입금</button>
+          <button class="filter" data-filter="expense">지출</button>
+        </nav>
+        <div class="ledger" id="ledger" aria-live="polite"></div>
+        <div class="empty" id="emptyState">
+          <span class="empty__mark">＋</span>
+          <h3>아직 기록이 없어요</h3>
+          <p>영수증 사진 한 장으로<br />첫 지출을 남겨보세요.</p>
+        </div>
+      </section>
+
+      <button class="add-expense" id="openExpense"><span>＋</span> 영수증으로 지출 등록</button>
+    </main>
+
+    <div class="modal-backdrop" id="expenseBackdrop" hidden>
+      <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="expenseTitle">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header"><div><p>NEW EXPENSE</p><h2 id="expenseTitle">영수증 지출 등록</h2></div><button class="close" id="closeExpense" aria-label="닫기">×</button></div>
+        <form id="expenseForm">
+          <input id="receiptInput" name="receipt" type="file" accept="image/*" capture="environment" hidden />
+          <label class="receipt-picker" for="receiptInput" id="receiptPicker">
+            <span class="receipt-picker__camera">⌑</span>
+            <span><b>영수증 또는 카드 전표 사진</b><small>사진을 찍거나 앨범에서 선택하세요</small></span>
+            <span class="receipt-picker__arrow">›</span>
+          </label>
+          <div class="receipt-preview" id="receiptPreview" hidden>
+            <img id="previewImage" alt="선택한 영수증 미리보기" />
+            <span><b id="receiptFileName">영수증 사진</b><small>증빙 사진이 함께 저장됩니다</small></span>
+            <button type="button" id="removeReceipt" aria-label="사진 제거">×</button>
+          </div>
+          <p class="scan-note">사진을 읽어 상호·날짜·금액을 자동으로 장부에 기록합니다.</p>
+          <div class="manual-fields">
+            <label class="field">금액<input id="expenseValue" name="amount" type="number" min="1" inputmode="numeric" placeholder="영수증 금액을 입력하세요" /></label>
+            <div class="two-fields">
+              <label class="field">지출 등록자<input id="expensePerson" name="person" maxlength="12" readonly /></label>
+              <label class="field">사용 날짜<input id="expenseDate" name="date" type="date" /></label>
+            </div>
+            <label class="field field--last">메모 <span>(선택)</span><input name="memo" maxlength="30" placeholder="예: 7월 정기모임 식사" /></label>
+          </div>
+          <button class="save-expense" id="saveExpenseButton" type="submit">지출 저장하기 <span>→</span></button>
+        </form>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="detailBackdrop" hidden>
+      <section class="sheet detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header"><div><p id="detailType">EXPENSE</p><h2 id="detailTitle">지출 상세</h2></div><button class="close" id="closeDetail" aria-label="닫기">×</button></div>
+        <div id="detailContent"></div>
+      </section>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

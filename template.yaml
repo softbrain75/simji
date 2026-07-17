@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 심지회 공동 장부 API - 영수증 자동 분석 및 저장
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: '*'
+    Description: Amplify 배포 URL. 최초 배포 시에는 *로 두고, 배포 후 실제 URL로 변경합니다.
+  SessionSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: 로그인 세션 서명용 긴 무작위 문자열
+  LoginSuffix:
+    Type: String
+    Default: '0717'
+  BedrockModelId:
+    Type: String
+    Default: global.amazon.nova-2-lite-v1:0
+
+Resources:
+  SimjiApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowHeaders:
+          - content-type
+          - authorization
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - !Ref AllowedOrigin
+
+  LedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+
+  ReceiptBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  SimjiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: app.handler
+      Runtime: nodejs20.x
+      MemorySize: 1024
+      Timeout: 30
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref LedgerTable
+          BUCKET_NAME: !Ref ReceiptBucket
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+          SESSION_SECRET: !Ref SessionSecret
+          LOGIN_SUFFIX: !Ref LoginSuffix
+          MEMBERS: 종남,인기,상훈,민철,공근,성호
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LedgerTable
+        - S3ReadPolicy:
+            BucketName: !Ref ReceiptBucket
+        - S3WritePolicy:
+            BucketName: !Ref ReceiptBucket
+        - Statement:
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource: '*'
+      Events:
+        Auth:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth
+            Method: POST
+        Records:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /records
+            Method: GET
+        ScanExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /expenses/scan
+            Method: POST
+
+Outputs:
+  ApiUrl:
+    Description: SIMJI_API_URL에 넣을 API Gateway 주소
+    Value: !Sub https://${SimjiApi}.execute-api.${AWS::Region}.amazonaws.com
+  ReceiptBucketName:
+    Value: !Ref ReceiptBucket
+  LedgerTableName:
+    Value: !Ref LedgerTable

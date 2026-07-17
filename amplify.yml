@@ -1,0 +1,15 @@
+version: 1
+frontend:
+  phases:
+    build:
+      commands:
+        - 'echo "window.SIMJI_CONFIG = { apiUrl: \"$SIMJI_API_URL\" };" > config.js'
+  artifacts:
+    baseDirectory: .
+    files:
+      - index.html
+      - styles.css
+      - app.js
+      - config.js
+  cache:
+    paths: []

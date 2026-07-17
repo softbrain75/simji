@@ -11,5 +11,8 @@ frontend:
       - styles.css
       - app.js
       - config.js
+      - manifest.webmanifest
+      - service-worker.js
+      - icons/simji-icon.svg
   cache:
     paths: []

@@ -1,3 +1,11 @@
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js').catch(() => {
+      // The app still works online when a browser blocks service workers.
+    });
+  });
+}
+
 const byId = (id) => document.getElementById(id);
 const storageKey = 'simji-ledger-v1';
 const memberStorageKey = 'simji-member-v1';

@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
@@ -23,7 +23,7 @@ const response = (statusCode, body) => ({
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': allowedOrigin,
     'access-control-allow-headers': 'content-type,authorization',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-methods': 'GET,POST,PATCH,OPTIONS',
   },
   body: JSON.stringify(body),
 });
@@ -152,6 +152,74 @@ async function scanAndSave(event, member) {
   return response(201, { record: await publicRecord(record), needsReview: record.needsReview });
 }
 
+function isValidDate(value) {
+  const date = String(value || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+}
+
+async function findExpense(id) {
+  let startKey;
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': 'SIMJI' },
+      ExclusiveStartKey: startKey,
+    }));
+    const record = (result.Items || []).find((item) => item.id === id && item.type === 'expense');
+    if (record) return record;
+    startKey = result.LastEvaluatedKey;
+  } while (startKey);
+  return null;
+}
+
+async function updateExpense(event, member) {
+  const id = event.pathParameters?.id;
+  if (!id) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+
+  const record = await findExpense(id);
+  if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+
+  const { amount: rawAmount, date, memo = '' } = parseBody(event);
+  const amount = normalizeAmount(rawAmount);
+  if (!amount || amount > 100000000) return response(400, { message: '금액을 확인해 주세요.' });
+  if (!isValidDate(date)) return response(400, { message: '날짜를 확인해 주세요.' });
+
+  const updatedRecord = {
+    ...record,
+    amount,
+    date,
+    memo: String(memo).trim().slice(0, 80),
+    needsReview: false,
+    updatedAt: new Date().toISOString(),
+    updatedBy: member,
+  };
+  await ddb.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { pk: record.pk, sk: record.sk },
+    UpdateExpression: 'SET #amount = :amount, #date = :date, #memo = :memo, #needsReview = :needsReview, updatedAt = :updatedAt, updatedBy = :updatedBy',
+    ExpressionAttributeNames: {
+      '#amount': 'amount',
+      '#date': 'date',
+      '#memo': 'memo',
+      '#needsReview': 'needsReview',
+    },
+    ExpressionAttributeValues: {
+      ':amount': updatedRecord.amount,
+      ':date': updatedRecord.date,
+      ':memo': updatedRecord.memo,
+      ':needsReview': updatedRecord.needsReview,
+      ':updatedAt': updatedRecord.updatedAt,
+      ':updatedBy': updatedRecord.updatedBy,
+    },
+    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+  }));
+  return response(200, { record: await publicRecord(updatedRecord) });
+}
+
 exports.handler = async (event) => {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path = event.rawPath || event.path;
@@ -161,6 +229,7 @@ exports.handler = async (event) => {
     const member = getSessionMember(event);
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'POST' && path === '/expenses/scan') return await scanAndSave(event, member);
+    if (method === 'PATCH' && /^\/expenses\/[^/]+$/.test(path)) return await updateExpense(event, member);
     return response(404, { message: '요청한 기능을 찾을 수 없습니다.' });
   } catch (error) {
     console.error(error);

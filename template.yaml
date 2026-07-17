@@ -30,6 +30,7 @@ Resources:
         AllowMethods:
           - GET
           - POST
+          - PATCH
           - OPTIONS
         AllowOrigins:
           - !Ref AllowedOrigin
@@ -112,6 +113,12 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /expenses/scan
             Method: POST
+        UpdateExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /expenses/{id}
+            Method: PATCH
 
 Outputs:
   ApiUrl:

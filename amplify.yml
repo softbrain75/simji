@@ -9,6 +9,7 @@ frontend:
     files:
       - index.html
       - styles.css
+      - detail-edit.css
       - app.js
       - config.js
       - manifest.webmanifest

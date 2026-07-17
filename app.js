@@ -122,11 +122,49 @@ function compressImage(file) {
   });
 }
 function openDetail(record) {
+  if (record.type === 'expense') {
+    const proofUrl = record.proofUrl || record.proof;
+    byId('detailType').textContent = 'EXPENSE';
+    byId('detailTitle').textContent = record.memo || '영수증 지출';
+    byId('detailContent').innerHTML = `<form class="detail-content detail-edit-form" id="detailEditForm">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-edit-hint">영수증을 보고 금액·날짜·메모를 고친 뒤 저장하세요.</p><label class="field">금액<input name="amount" type="number" min="1" max="100000000" inputmode="numeric" value="${Number(record.amount) || ''}" required /></label><label class="field">기록 날짜<input name="date" type="date" value="${escapeHtml(record.date)}" required /></label><label class="field field--last">메모 <span>(선택)</span><input name="memo" maxlength="80" value="${escapeHtml(record.memo || '')}" placeholder="예: 7월 정기모임 식사" /></label><p class="detail-person">지출 등록자 · ${escapeHtml(record.person || record.member || '')}</p><button class="save-expense detail-save" id="detailSaveButton" type="submit">수정 저장하기 <span>→</span></button></form>`;
+    byId('detailEditForm').addEventListener('submit', (event) => saveExpenseEdit(event, record));
+    byId('detailBackdrop').hidden = false;
+    return;
+  }
   const proofUrl = record.proofUrl || record.proof;
   byId('detailType').textContent = record.type === 'income' ? 'INCOME' : 'EXPENSE';
   byId('detailTitle').textContent = record.type === 'income' ? '회비 입금' : (record.memo || '영수증 지출');
   byId('detailContent').innerHTML = `<div class="detail-content">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-amount">${record.type === 'income' ? '+' : '−'}${formatMoney(record.amount)}</p><dl class="detail-list"><div><dt>기록 날짜</dt><dd>${formatDate(record.date)}</dd></div><div><dt>${record.type === 'income' ? '확인 방식' : '지출한 사람'}</dt><dd>${escapeHtml(record.type === 'income' ? '계좌 거래내역' : (record.person || record.member))}</dd></div>${record.memo ? `<div><dt>메모</dt><dd>${escapeHtml(record.memo)}</dd></div>` : ''}</dl></div>`;
   byId('detailBackdrop').hidden = false;
+}
+
+async function saveExpenseEdit(event, record) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const amount = Number(form.get('amount'));
+  const date = String(form.get('date') || '');
+  const memo = String(form.get('memo') || '').trim();
+  if (!amount || !date) { showToast('금액과 날짜를 입력해 주세요.'); return; }
+
+  const button = byId('detailSaveButton');
+  button.disabled = true;
+  button.textContent = '수정 저장 중…';
+  try {
+    if (cloudMode) {
+      await api(`/expenses/${encodeURIComponent(record.id)}`, { method: 'PATCH', body: { amount, date, memo } });
+    } else {
+      const records = getLocalRecords().map((item) => (item.id === record.id ? { ...item, amount, date, memo, needsReview: false } : item));
+      saveLocalRecords(records);
+    }
+    byId('detailBackdrop').hidden = true;
+    await loadRecords();
+    showToast('지출 기록을 수정했어요.');
+  } catch (error) {
+    showToast(error.message || '수정 내용을 저장하지 못했어요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '수정 저장하기 <span>→</span>';
+  }
 }
 
 function enterApp(member, sessionToken = '') {

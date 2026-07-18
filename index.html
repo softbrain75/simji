@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
     <link rel="stylesheet" href="styles.css?v=11" />
     <link rel="stylesheet" href="detail-edit.css?v=10" />
-    <link rel="stylesheet" href="media.css?v=2" />
+    <link rel="stylesheet" href="media.css?v=3" />
   </head>
   <body>
     <section class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
@@ -182,8 +182,9 @@
           <input id="mediaPhotoInput" type="file" accept="image/*" multiple hidden />
           <label class="receipt-picker media-picker" for="mediaPhotoInput"><span class="receipt-picker__camera">✦</span><span><b>사진 선택</b><small>앨범 또는 카메라에서 최대 10장</small></span><span class="receipt-picker__arrow">›</span></label>
           <div class="media-photo-preview" id="mediaPhotoPreview" hidden></div>
-          <p class="scan-note">사진은 멤버만 볼 수 있는 비공개 보관함에 저장됩니다.</p>
-          <div class="two-fields"><label class="field">날짜<input id="mediaPhotoDate" name="date" type="date" required /></label><label class="field">등록자<input id="mediaPhotoPerson" value="" readonly /></label></div>
+          <div class="media-photo-info" id="mediaPhotoInfo" hidden></div>
+          <p class="scan-note">사진에 담긴 촬영 날짜와 위치 정보를 자동으로 읽습니다. 위치가 있으면 지역명으로 표시되고, 사진은 멤버만 볼 수 있는 비공개 보관함에 저장됩니다.</p>
+          <label class="field field--last">등록자<input id="mediaPhotoPerson" value="" readonly /></label>
           <label class="field field--last">메모 <span>(선택)</span><input name="caption" maxlength="80" placeholder="예: 여름 정기모임" /></label>
           <button class="save-expense" id="saveMediaPhoto" type="submit">사진 보관하기 <span>→</span></button>
         </form>
@@ -204,6 +205,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=15"></script>
+    <script src="app.js?v=19"></script>
   </body>
 </html>

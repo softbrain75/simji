@@ -22,6 +22,9 @@ let mediaHasMore = true;
 let mediaLoading = false;
 let selectedMediaFiles = [];
 let mediaPreviewUrls = [];
+let mediaPhotoMetadata = [];
+let mediaPhotoMetadataLoading = false;
+let mediaSelectionVersion = 0;
 let mediaObserver;
 let serviceWorkerRegistration;
 let serviceWorkerReloading = false;
@@ -116,6 +119,256 @@ function todayInKorea() {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
   const part = (type) => parts.find((item) => item.type === type).value;
   return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+function isLikelyImage(file) {
+  return /^image\//i.test(file?.type || '') || /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i.test(file?.name || '');
+}
+function numberPad(value) { return String(value).padStart(2, '0'); }
+function dateFromMillis(value) {
+  const date = new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return { date: todayInKorea(), capturedAt: '' };
+  return {
+    date: `${date.getFullYear()}-${numberPad(date.getMonth() + 1)}-${numberPad(date.getDate())}`,
+    capturedAt: `${date.getFullYear()}-${numberPad(date.getMonth() + 1)}-${numberPad(date.getDate())}T${numberPad(date.getHours())}:${numberPad(date.getMinutes())}:${numberPad(date.getSeconds())}`,
+  };
+}
+function parseExifDate(value) {
+  const matched = String(value || '').trim().match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+  if (!matched) return null;
+  const [, year, month, day, hour, minute, second] = matched;
+  const stamp = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+  const checked = new Date(`${stamp}Z`);
+  if (Number.isNaN(checked.getTime()) || checked.getUTCFullYear() !== Number(year) || checked.getUTCMonth() + 1 !== Number(month) || checked.getUTCDate() !== Number(day)) return null;
+  return { date: `${year}-${month}-${day}`, capturedAt: stamp };
+}
+function readAscii(bytes, start, length) {
+  if (start < 0 || length < 0 || start + length > bytes.length) return '';
+  let output = '';
+  for (let index = start; index < start + length; index += 1) {
+    const value = bytes[index];
+    if (!value) break;
+    output += String.fromCharCode(value);
+  }
+  return output;
+}
+function hasBytes(bytes, start, expected) {
+  return start >= 0 && start + expected.length <= bytes.length && expected.every((value, index) => bytes[start + index] === value);
+}
+function readUint64Safe(view, offset, littleEndian) {
+  const high = view.getUint32(offset + (littleEndian ? 4 : 0), littleEndian);
+  const low = view.getUint32(offset + (littleEndian ? 0 : 4), littleEndian);
+  const value = high * 4294967296 + low;
+  return Number.isSafeInteger(value) ? value : 0;
+}
+function parseTiffExif(bytes, start, end = bytes.length) {
+  try {
+    if (start < 0 || start + 8 > end) return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const byteOrder = readAscii(bytes, start, 2);
+    const littleEndian = byteOrder === 'II';
+    if (!littleEndian && byteOrder !== 'MM') return null;
+    const u16 = (offset) => (offset + 2 <= end ? view.getUint16(offset, littleEndian) : 0);
+    const u32 = (offset) => (offset + 4 <= end ? view.getUint32(offset, littleEndian) : 0);
+    if (u16(start + 2) !== 42) return null;
+    const typeSizes = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8 };
+    const readIfd = (relativeOffset) => {
+      const offset = start + relativeOffset;
+      if (!relativeOffset || offset + 2 > end) return new Map();
+      const count = u16(offset);
+      if (count > 160 || offset + 2 + count * 12 > end) return new Map();
+      const tags = new Map();
+      for (let index = 0; index < count; index += 1) {
+        const entry = offset + 2 + index * 12;
+        const tag = u16(entry);
+        const type = u16(entry + 2);
+        const countValue = u32(entry + 4);
+        const byteLength = (typeSizes[type] || 0) * countValue;
+        if (!byteLength || byteLength > end - start) continue;
+        const valueOffset = byteLength <= 4 ? entry + 8 : start + u32(entry + 8);
+        if (valueOffset < start || valueOffset + byteLength > end) continue;
+        tags.set(tag, { type, count: countValue, valueOffset, rawOffset: u32(entry + 8), byteLength });
+      }
+      return tags;
+    };
+    const textValue = (entry) => entry && readAscii(bytes, entry.valueOffset, entry.byteLength).trim();
+    const pointerValue = (entry) => entry && (entry.type === 3 ? u16(entry.valueOffset) : u32(entry.valueOffset));
+    const rationalValue = (entry) => {
+      if (!entry || entry.type !== 5 || entry.count < 3) return null;
+      const parts = [0, 1, 2].map((index) => {
+        const offset = entry.valueOffset + index * 8;
+        const denominator = u32(offset + 4);
+        return denominator ? u32(offset) / denominator : 0;
+      });
+      return parts.every(Number.isFinite) ? parts[0] + parts[1] / 60 + parts[2] / 3600 : null;
+    };
+    const firstIfd = readIfd(u32(start + 4));
+    const exifIfd = readIfd(pointerValue(firstIfd.get(0x8769)));
+    const gpsIfd = readIfd(pointerValue(firstIfd.get(0x8825)));
+    const capture = parseExifDate(textValue(exifIfd.get(0x9003)) || textValue(exifIfd.get(0x9004)) || textValue(firstIfd.get(0x0132)));
+    let latitude = rationalValue(gpsIfd.get(2));
+    let longitude = rationalValue(gpsIfd.get(4));
+    const latitudeRef = (textValue(gpsIfd.get(1)) || '').toUpperCase();
+    const longitudeRef = (textValue(gpsIfd.get(3)) || '').toUpperCase();
+    if (latitudeRef === 'S') latitude = -latitude;
+    if (longitudeRef === 'W') longitude = -longitude;
+    const hasCoordinates = Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 && (latitude || longitude);
+    return { ...(capture || {}), ...(hasCoordinates ? { latitude, longitude } : {}) };
+  } catch {
+    return null;
+  }
+}
+function readBigEndian(bytes, offset, length) {
+  if (length < 0 || length > 8 || offset < 0 || offset + length > bytes.length) return 0;
+  let value = 0;
+  for (let index = 0; index < length; index += 1) value = value * 256 + bytes[offset + index];
+  return Number.isSafeInteger(value) ? value : 0;
+}
+function bmffBoxes(bytes, start, end) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const boxes = [];
+  for (let offset = start; offset + 8 <= end;) {
+    let size = view.getUint32(offset, false);
+    const type = readAscii(bytes, offset + 4, 4);
+    let headerSize = 8;
+    if (size === 1) {
+      if (offset + 16 > end) break;
+      size = readUint64Safe(view, offset + 8, false);
+      headerSize = 16;
+    } else if (size === 0) size = end - offset;
+    if (size < headerSize || offset + size > end) break;
+    boxes.push({ type, start: offset, payloadStart: offset + headerSize, end: offset + size });
+    offset += size;
+  }
+  return boxes;
+}
+function parseHeifExif(bytes) {
+  try {
+    const meta = bmffBoxes(bytes, 0, bytes.length).find((box) => box.type === 'meta');
+    if (!meta || meta.payloadStart + 4 > meta.end) return null;
+    const children = bmffBoxes(bytes, meta.payloadStart + 4, meta.end);
+    const iinf = children.find((box) => box.type === 'iinf');
+    const iloc = children.find((box) => box.type === 'iloc');
+    if (!iinf || !iloc) return null;
+    const iinfVersion = bytes[iinf.payloadStart];
+    const infeStart = iinf.payloadStart + 4 + (iinfVersion === 0 ? 2 : 4);
+    const exifIds = new Set(bmffBoxes(bytes, infeStart, iinf.end).map((box) => {
+      const version = bytes[box.payloadStart];
+      if (version < 2) return 0;
+      const idLength = version === 2 ? 2 : 4;
+      const idOffset = box.payloadStart + 4;
+      const itemTypeOffset = idOffset + idLength + 2;
+      return readAscii(bytes, itemTypeOffset, 4) === 'Exif' ? readBigEndian(bytes, idOffset, idLength) : 0;
+    }).filter(Boolean));
+    if (!exifIds.size) return null;
+    const version = bytes[iloc.payloadStart];
+    let cursor = iloc.payloadStart + 4;
+    const offsetSize = bytes[cursor] >> 4;
+    const lengthSize = bytes[cursor] & 15;
+    cursor += 1;
+    const baseOffsetSize = bytes[cursor] >> 4;
+    const indexSize = version === 1 || version === 2 ? bytes[cursor] & 15 : 0;
+    cursor += 1;
+    const itemCountLength = version < 2 ? 2 : 4;
+    const itemCount = readBigEndian(bytes, cursor, itemCountLength);
+    cursor += itemCountLength;
+    const idat = children.find((box) => box.type === 'idat');
+    for (let item = 0; item < itemCount && cursor < iloc.end; item += 1) {
+      const idLength = version < 2 ? 2 : 4;
+      const itemId = readBigEndian(bytes, cursor, idLength);
+      cursor += idLength;
+      let constructionMethod = 0;
+      if (version === 1 || version === 2) {
+        constructionMethod = readBigEndian(bytes, cursor, 2) & 15;
+        cursor += 2;
+      }
+      cursor += 2; // data reference index
+      const baseOffset = readBigEndian(bytes, cursor, baseOffsetSize);
+      cursor += baseOffsetSize;
+      const extentCount = readBigEndian(bytes, cursor, 2);
+      cursor += 2;
+      for (let extent = 0; extent < extentCount && cursor < iloc.end; extent += 1) {
+        if ((version === 1 || version === 2) && indexSize) cursor += indexSize;
+        const extentOffset = readBigEndian(bytes, cursor, offsetSize);
+        cursor += offsetSize;
+        const extentLength = readBigEndian(bytes, cursor, lengthSize);
+        cursor += lengthSize;
+        if (!exifIds.has(itemId) || !extentLength) continue;
+        const dataStart = (constructionMethod === 1 && idat ? idat.payloadStart : 0) + baseOffset + extentOffset;
+        const dataEnd = dataStart + extentLength;
+        if (dataStart < 0 || dataEnd > bytes.length) continue;
+        const tiffOffset = readBigEndian(bytes, dataStart, 4);
+        const parsed = parseTiffExif(bytes, dataStart + 4 + tiffOffset, dataEnd)
+          || (hasBytes(bytes, dataStart, [69, 120, 105, 102, 0, 0]) ? parseTiffExif(bytes, dataStart + 6, dataEnd) : null);
+        if (parsed) return parsed;
+      }
+    }
+  } catch {
+    // Some HEIC variants do not expose an Exif item. The normal fallback is used below.
+  }
+  return null;
+}
+function parsePhotoExif(bytes) {
+  try {
+    if (bytes.length > 12 && readAscii(bytes, 0, 2) === '\xFF\xD8') {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let offset = 2; offset + 4 < bytes.length;) {
+        if (bytes[offset] !== 0xff) { offset += 1; continue; }
+        const marker = bytes[offset + 1];
+        if (marker === 0xda || marker === 0xd9) break;
+        const length = view.getUint16(offset + 2, false);
+        const end = offset + 2 + length;
+        if (length < 2 || end > bytes.length) break;
+        if (marker === 0xe1 && hasBytes(bytes, offset + 4, [69, 120, 105, 102, 0, 0])) return parseTiffExif(bytes, offset + 10, end);
+        offset = end;
+      }
+    }
+    if (bytes.length > 12 && readAscii(bytes, 1, 3) === 'PNG') {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let offset = 8; offset + 12 <= bytes.length;) {
+        const length = view.getUint32(offset, false);
+        const dataStart = offset + 8;
+        const end = dataStart + length;
+        if (end + 4 > bytes.length) break;
+        if (readAscii(bytes, offset + 4, 4) === 'eXIf') return parseTiffExif(bytes, dataStart, end);
+        offset = end + 4;
+      }
+    }
+    if (readAscii(bytes, 0, 4) === 'RIFF' && readAscii(bytes, 8, 4) === 'WEBP') {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      for (let offset = 12; offset + 8 <= bytes.length;) {
+        const length = view.getUint32(offset + 4, true);
+        const dataStart = offset + 8;
+        if (dataStart + length > bytes.length) break;
+        if (readAscii(bytes, offset, 4) === 'EXIF') return parseTiffExif(bytes, dataStart, dataStart + length);
+        offset = dataStart + length + (length % 2);
+      }
+    }
+    if (readAscii(bytes, 4, 4) === 'ftyp' && ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1'].includes(readAscii(bytes, 8, 4))) return parseHeifExif(bytes);
+  } catch {
+    // Metadata is optional, so a malformed image never prevents it from being stored.
+  }
+  return null;
+}
+async function photoMetadataFromFile(file) {
+  const fallback = dateFromMillis(file.lastModified || Date.now());
+  try {
+    const exif = parsePhotoExif(new Uint8Array(await file.arrayBuffer())) || {};
+    return {
+      date: exif.date || fallback.date,
+      capturedAt: exif.capturedAt || fallback.capturedAt,
+      latitude: exif.latitude,
+      longitude: exif.longitude,
+      source: exif.date ? 'exif' : 'file',
+    };
+  } catch {
+    return { ...fallback, source: 'file' };
+  }
+}
+function formatCapturedAt(value, fallbackDate = '') {
+  const matched = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!matched) return fallbackDate ? formatMediaDate(fallbackDate) : '';
+  return `${Number(matched[2])}월 ${Number(matched[3])}일 ${matched[4]}:${matched[5]}`;
 }
 function setToday() { byId('expenseDate').value = todayInKorea(); }
 
@@ -270,7 +523,6 @@ function closeDetail() {
 }
 function openMedia() {
   if (!cloudMode) { showToast('사진·영상 보관함은 AWS 연결 후 사용할 수 있어요.'); return; }
-  byId('mediaPhotoDate').value = todayInKorea();
   byId('mediaVideoDate').value = todayInKorea();
   byId('mediaPhotoPerson').value = activeMember;
   byId('mediaVideoPerson').value = activeMember;
@@ -462,7 +714,8 @@ function formatMediaDateShort(value) {
 function mediaCardMarkup(item) {
   const isVideo = item.mediaType === 'video';
   const description = item.caption || (isVideo ? '유튜브 영상' : '심지회 사진');
-  return `<button class="media-card media-card--${escapeHtml(item.mediaType)}" type="button" data-media-id="${escapeHtml(item.id)}"><span class="media-card__image"><img loading="lazy" src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(description)}" />${isVideo ? '<span class="media-card__youtube">YouTube</span><span class="media-card__play">▶</span>' : ''}</span><span class="media-card__caption">${escapeHtml(description)}</span><span class="media-card__person">${escapeHtml(item.person || '')}</span></button>`;
+  const location = item.locationName ? `<span class="media-card__location">⌖ ${escapeHtml(item.locationName)}</span>` : '';
+  return `<button class="media-card media-card--${escapeHtml(item.mediaType)}" type="button" data-media-id="${escapeHtml(item.id)}"><span class="media-card__image"><img loading="lazy" src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(description)}" />${isVideo ? '<span class="media-card__youtube">YouTube</span><span class="media-card__play">▶</span>' : ''}</span><span class="media-card__caption">${escapeHtml(description)}</span>${location}<span class="media-card__person">${escapeHtml(item.person || '')}</span></button>`;
 }
 function renderMedia() {
   const visibleItems = mediaItems.filter((item) => activeMediaFilter === 'all' || item.mediaType === activeMediaFilter);
@@ -514,22 +767,53 @@ async function loadMedia({ reset = false } = {}) {
   }
 }
 function clearMediaPhotoSelection() {
+  mediaSelectionVersion += 1;
   mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   mediaPreviewUrls = [];
   selectedMediaFiles = [];
+  mediaPhotoMetadata = [];
+  mediaPhotoMetadataLoading = false;
   byId('mediaPhotoInput').value = '';
   byId('mediaPhotoPreview').hidden = true;
   byId('mediaPhotoPreview').innerHTML = '';
+  byId('mediaPhotoInfo').hidden = true;
+  byId('mediaPhotoInfo').innerHTML = '';
 }
-function setSelectedMediaFiles(files) {
-  const allFiles = Array.from(files || []).filter((file) => file.type.startsWith('image/'));
+function renderMediaPhotoInfo() {
+  const info = byId('mediaPhotoInfo');
+  if (!selectedMediaFiles.length) { info.hidden = true; return; }
+  if (mediaPhotoMetadataLoading) {
+    info.hidden = false;
+    info.innerHTML = '<b>촬영 정보 읽는 중…</b><span>사진에 포함된 날짜와 위치를 확인하고 있어요.</span>';
+    return;
+  }
+  info.hidden = false;
+  info.innerHTML = mediaPhotoMetadata.map((metadata, index) => {
+    const dateLabel = formatCapturedAt(metadata.capturedAt, metadata.date);
+    const placeLabel = Number.isFinite(metadata.latitude) && Number.isFinite(metadata.longitude)
+      ? '위치 정보 확인됨 · 보관할 때 지역명으로 표시'
+      : '위치 정보 없음';
+    const fallback = metadata.source === 'file' ? '사진 날짜 정보가 없어 파일 날짜를 사용합니다' : '';
+    return `<p><b>${escapeHtml(selectedMediaFiles[index]?.name || `사진 ${index + 1}`)}</b><span>${escapeHtml(dateLabel)} · ${placeLabel}${fallback ? ` · ${fallback}` : ''}</span></p>`;
+  }).join('');
+}
+async function setSelectedMediaFiles(files) {
+  const allFiles = Array.from(files || []).filter(isLikelyImage);
   clearMediaPhotoSelection();
+  const selectionVersion = mediaSelectionVersion;
   if (allFiles.length > 10) showToast('사진은 한 번에 최대 10장까지 선택할 수 있어요.');
   selectedMediaFiles = allFiles.slice(0, 10);
   if (!selectedMediaFiles.length) return;
   mediaPreviewUrls = selectedMediaFiles.map((file) => URL.createObjectURL(file));
   byId('mediaPhotoPreview').innerHTML = mediaPreviewUrls.map((url, index) => `<img src="${url}" alt="선택한 사진 ${index + 1}" />`).join('');
   byId('mediaPhotoPreview').hidden = false;
+  mediaPhotoMetadataLoading = true;
+  renderMediaPhotoInfo();
+  const metadata = await Promise.all(selectedMediaFiles.map(photoMetadataFromFile));
+  if (selectionVersion !== mediaSelectionVersion) return;
+  mediaPhotoMetadata = metadata;
+  mediaPhotoMetadataLoading = false;
+  renderMediaPhotoInfo();
 }
 function setMediaForm(type) {
   const isPhoto = type === 'photo';
@@ -540,22 +824,30 @@ function setMediaForm(type) {
 async function saveMediaPhotos(event) {
   event.preventDefault();
   if (!selectedMediaFiles.length) { showToast('보관할 사진을 선택해 주세요.'); return; }
+  if (mediaPhotoMetadataLoading) { showToast('사진의 촬영 정보를 읽는 중이에요. 잠시만 기다려 주세요.'); return; }
   const formElement = event.currentTarget;
   const photoCount = selectedMediaFiles.length;
   const form = new FormData(formElement);
-  const date = String(form.get('date') || '');
   const caption = String(form.get('caption') || '').trim();
-  if (!date) { showToast('사진 날짜를 선택해 주세요.'); return; }
   const button = byId('saveMediaPhoto');
   button.disabled = true;
   try {
     for (let index = 0; index < photoCount; index += 1) {
+      const metadata = mediaPhotoMetadata[index] || dateFromMillis(selectedMediaFiles[index].lastModified || Date.now());
       button.textContent = `사진 ${index + 1}/${photoCount} 저장 중…`;
       const image = await compressImage(selectedMediaFiles[index], 1280, 0.76);
       const thumbnail = await compressImage(selectedMediaFiles[index], 480, 0.7);
       await api('/media/photos', {
         method: 'POST',
-        body: { imageBase64: image.split(',')[1], thumbnailBase64: thumbnail.split(',')[1], date, caption },
+        body: {
+          imageBase64: image.split(',')[1],
+          thumbnailBase64: thumbnail.split(',')[1],
+          date: metadata.date,
+          capturedAt: metadata.capturedAt,
+          latitude: metadata.latitude,
+          longitude: metadata.longitude,
+          caption,
+        },
       });
     }
     formElement.reset();
@@ -595,7 +887,8 @@ async function saveMediaVideo(event) {
 }
 function mediaEditorMarkup(item) {
   if (item.person !== activeMember) return '';
-  return `<form class="media-editor" id="mediaEditForm"><label>날짜<input name="date" type="date" value="${escapeHtml(item.date)}" required /></label><label>메모<input name="caption" maxlength="80" value="${escapeHtml(item.caption || '')}" placeholder="사진 또는 영상 메모" /></label><button type="submit">수정 저장</button></form><button class="media-delete" id="mediaDeleteButton" type="button">${item.mediaType === 'photo' ? '이 사진 삭제' : '이 영상 링크 삭제'}</button>`;
+  const dateField = item.mediaType === 'video' ? `<label>날짜<input name="date" type="date" value="${escapeHtml(item.date)}" required /></label>` : '';
+  return `<form class="media-editor" id="mediaEditForm">${dateField}<label>메모<input name="caption" maxlength="80" value="${escapeHtml(item.caption || '')}" placeholder="사진 또는 영상 메모" /></label><button type="submit">수정 저장</button></form><button class="media-delete" id="mediaDeleteButton" type="button">${item.mediaType === 'photo' ? '이 사진 삭제' : '이 영상 링크 삭제'}</button>`;
 }
 function renderMediaDetail(item, photoUrl = '') {
   const isVideo = item.mediaType === 'video';
@@ -603,7 +896,9 @@ function renderMediaDetail(item, photoUrl = '') {
   const visual = isVideo
     ? `<a class="media-detail-video" href="${escapeHtml(item.youtubeUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(description)}" /><span>▶</span><b>유튜브에서 보기</b></a>`
     : `<img class="media-detail-image" src="${escapeHtml(photoUrl)}" alt="${escapeHtml(description)}" />`;
-  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content">${visual}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p><h2 id="mediaDetailTitle">${escapeHtml(description)}</h2><p>등록 · ${escapeHtml(item.person || '')}</p></div>${mediaEditorMarkup(item)}</div>`;
+  const captured = !isVideo && item.capturedAt ? `<p class="media-detail-captured">촬영 · ${escapeHtml(formatCapturedAt(item.capturedAt, item.date))}</p>` : '';
+  const location = !isVideo && item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
+  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content">${visual}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${captured}<h2 id="mediaDetailTitle">${escapeHtml(description)}</h2>${location}<p>등록 · ${escapeHtml(item.person || '')}</p></div>${mediaEditorMarkup(item)}</div>`;
   const editForm = byId('mediaEditForm');
   if (editForm) editForm.addEventListener('submit', (event) => saveMediaEdit(event, item));
   const deleteButton = byId('mediaDeleteButton');
@@ -627,7 +922,7 @@ async function openMediaDetail(item) {
 async function saveMediaEdit(event, item) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const date = String(form.get('date') || '');
+  const date = String(form.get('date') || item.date);
   const caption = String(form.get('caption') || '').trim();
   const button = event.currentTarget.querySelector('button');
   button.disabled = true;

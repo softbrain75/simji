@@ -4,6 +4,7 @@ const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand, DeleteC
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { GeoPlacesClient, ReverseGeocodeCommand } = require('@aws-sdk/client-geo-places');
 
 const tableName = process.env.TABLE_NAME;
 const bucketName = process.env.BUCKET_NAME;
@@ -13,10 +14,12 @@ const loginSuffix = process.env.LOGIN_SUFFIX || '0717';
 const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 const modelId = process.env.BEDROCK_MODEL_ID || 'global.amazon.nova-2-lite-v1:0';
 const treasurerMember = process.env.TREASURER || '성호';
+const geoPlacesRegion = process.env.GEO_PLACES_REGION || 'ap-northeast-1';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 const bedrock = new BedrockRuntimeClient({});
+const geoPlaces = new GeoPlacesClient({ region: geoPlacesRegion, maxAttempts: 1 });
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -161,6 +164,51 @@ function normalizeCaption(value) {
   return String(value || '').trim().slice(0, 80);
 }
 
+function normalizeCapturedAt(value, fallbackDate) {
+  const matched = String(value || '').trim().match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
+  if (!matched || !isValidDate(matched[1])) return '';
+  const [, date, hour, minute, second] = matched;
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return '';
+  return `${date === fallbackDate ? date : fallbackDate}T${hour}:${minute}:${second}`;
+}
+
+function normalizeCoordinate(value, min, max) {
+  const coordinate = Number(value);
+  return Number.isFinite(coordinate) && coordinate >= min && coordinate <= max ? coordinate : undefined;
+}
+
+function addressPart(value) {
+  if (typeof value === 'string') return value.trim();
+  if (value && typeof value.Name === 'string') return value.Name.trim();
+  return '';
+}
+
+async function findPhotoRegion(latitude, longitude) {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return '';
+  try {
+    const result = await geoPlaces.send(new ReverseGeocodeCommand({
+      QueryPosition: [longitude, latitude],
+      MaxResults: 1,
+      Language: 'ko',
+      IntendedUse: 'Storage',
+    }));
+    const item = result.ResultItems?.[0] || {};
+    const address = item.Address || {};
+    const values = [
+      addressPart(address.Region),
+      addressPart(address.SubRegion),
+      addressPart(address.Locality),
+      addressPart(address.District),
+      addressPart(address.Neighborhood),
+    ].filter(Boolean);
+    const unique = values.filter((value, index) => !values.slice(0, index).some((existing) => existing === value));
+    return (unique.join(' · ') || String(item.Title || '').trim()).slice(0, 120);
+  } catch (error) {
+    console.warn('Unable to resolve photo region', error.name || 'UnknownError');
+    return '';
+  }
+}
+
 function extractYouTubeId(value) {
   try {
     const url = new URL(String(value || '').trim());
@@ -195,6 +243,8 @@ async function publicMediaItem(record, { includeOriginal = false } = {}) {
     id: record.id,
     mediaType: record.mediaType,
     date: record.date,
+    capturedAt: record.capturedAt,
+    locationName: record.locationName,
     caption: record.caption,
     person: record.person,
     thumbnailUrl,
@@ -247,11 +297,14 @@ async function getMedia(event) {
 }
 
 async function savePhoto(event, member) {
-  const { imageBase64, thumbnailBase64, date = todayInKorea(), caption = '' } = parseBody(event);
+  const { imageBase64, thumbnailBase64, date = todayInKorea(), capturedAt = '', latitude, longitude, caption = '' } = parseBody(event);
   if (!isValidDate(date)) return response(400, { message: '사진 날짜를 확인해 주세요.' });
   const image = decodeImage(imageBase64, 4 * 1024 * 1024);
   const thumbnail = decodeImage(thumbnailBase64, 1024 * 1024);
   if (!image || !thumbnail) return response(400, { message: '사진을 읽지 못했어요. 다시 선택해 주세요.' });
+  const normalizedLatitude = normalizeCoordinate(latitude, -90, 90);
+  const normalizedLongitude = normalizeCoordinate(longitude, -180, 180);
+  const locationName = await findPhotoRegion(normalizedLatitude, normalizedLongitude);
 
   const id = crypto.randomUUID();
   const prefix = `media/${date.slice(0, 7)}/${id}`;
@@ -267,6 +320,8 @@ async function savePhoto(event, member) {
     id,
     mediaType: 'photo',
     date,
+    capturedAt: normalizeCapturedAt(capturedAt, date),
+    locationName,
     caption: normalizeCaption(caption),
     person: member,
     photoKey,

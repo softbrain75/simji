@@ -84,6 +84,7 @@ Resources:
           MEMBERS: 종남,인기,상훈,민철,공근,성호
           TREASURER: 성호
           BEDROCK_MODEL_ID: !Ref BedrockModelId
+          GEO_PLACES_REGION: ap-northeast-1
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref LedgerTable
@@ -96,6 +97,11 @@ Resources:
             Action:
               - bedrock:InvokeModel
             Resource: '*'
+        - Statement:
+            Effect: Allow
+            Action:
+              - geo-places:ReverseGeocode
+            Resource: arn:aws:geo-places:ap-northeast-1::provider/default
       Events:
         Auth:
           Type: HttpApi

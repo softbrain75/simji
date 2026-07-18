@@ -16,5 +16,6 @@ frontend:
       - manifest.webmanifest
       - service-worker.js
       - icons/simji-icon.svg
+      - icons/simji-heart.svg
   cache:
     paths: []

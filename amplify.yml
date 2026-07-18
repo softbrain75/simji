@@ -17,5 +17,8 @@ frontend:
       - service-worker.js
       - icons/simji-icon.svg
       - icons/simji-heart.svg
+      - icons/simji-heart-180.png
+      - icons/simji-heart-192.png
+      - icons/simji-heart-512.png
   cache:
     paths: []

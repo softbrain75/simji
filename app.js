@@ -522,8 +522,8 @@ function clearMediaPhotoSelection() {
   byId('mediaPhotoPreview').innerHTML = '';
 }
 function setSelectedMediaFiles(files) {
-  clearMediaPhotoSelection();
   const allFiles = Array.from(files || []).filter((file) => file.type.startsWith('image/'));
+  clearMediaPhotoSelection();
   if (allFiles.length > 10) showToast('사진은 한 번에 최대 10장까지 선택할 수 있어요.');
   selectedMediaFiles = allFiles.slice(0, 10);
   if (!selectedMediaFiles.length) return;

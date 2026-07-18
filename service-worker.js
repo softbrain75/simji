@@ -1,14 +1,17 @@
-const CACHE_NAME = 'simji-pwa-v14';
+const CACHE_NAME = 'simji-pwa-v15';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/styles.css?v=11',
   '/detail-edit.css?v=10',
   '/media.css?v=2',
-  '/app.js?v=14',
+  '/app.js?v=15',
   '/config.js',
-  '/manifest.webmanifest?v=2',
+  '/manifest.webmanifest?v=3',
   '/icons/simji-heart.svg?v=1',
+  '/icons/simji-heart-180.png?v=1',
+  '/icons/simji-heart-192.png?v=1',
+  '/icons/simji-heart-512.png?v=1',
 ];
 
 self.addEventListener('install', (event) => {

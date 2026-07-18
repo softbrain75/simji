@@ -540,8 +540,9 @@ function setMediaForm(type) {
 async function saveMediaPhotos(event) {
   event.preventDefault();
   if (!selectedMediaFiles.length) { showToast('보관할 사진을 선택해 주세요.'); return; }
+  const formElement = event.currentTarget;
   const photoCount = selectedMediaFiles.length;
-  const form = new FormData(event.currentTarget);
+  const form = new FormData(formElement);
   const date = String(form.get('date') || '');
   const caption = String(form.get('caption') || '').trim();
   if (!date) { showToast('사진 날짜를 선택해 주세요.'); return; }
@@ -557,7 +558,7 @@ async function saveMediaPhotos(event) {
         body: { imageBase64: image.split(',')[1], thumbnailBase64: thumbnail.split(',')[1], date, caption },
       });
     }
-    event.currentTarget.reset();
+    formElement.reset();
     clearMediaPhotoSelection();
     closeMedia();
     await loadMedia({ reset: true });
@@ -571,7 +572,8 @@ async function saveMediaPhotos(event) {
 }
 async function saveMediaVideo(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   const url = String(form.get('url') || '').trim();
   const date = String(form.get('date') || '');
   if (!url || !date) { showToast('유튜브 링크와 날짜를 확인해 주세요.'); return; }
@@ -580,7 +582,7 @@ async function saveMediaVideo(event) {
   button.textContent = '영상 링크 저장 중…';
   try {
     await api('/media/videos', { method: 'POST', body: { url, date, caption: String(form.get('caption') || '').trim() } });
-    event.currentTarget.reset();
+    formElement.reset();
     closeMedia();
     await loadMedia({ reset: true });
     showToast('유튜브 영상을 보관했어요.');

@@ -1023,7 +1023,7 @@ function bindMediaPhotoCarousel(item) {
     if (!dragged) return;
     ignoreNextClick = true;
     if (deleteButton) deleteButton.hidden = true;
-  });
+  }, carousel);
 }
 function photoViewerItems() {
   return mediaItems.filter((item) => item.mediaType === 'photo');
@@ -1121,14 +1121,14 @@ async function animatePhotoTransition(direction, axis) {
   await new Promise((resolve) => window.setTimeout(resolve, 145));
   return true;
 }
-function bindPhotoDrag(main, axis, onCommit, onRelease = () => {}) {
+function bindPhotoDrag(main, axis, onCommit, onRelease = () => {}, moveTarget = main) {
   let startX = 0;
   let startY = 0;
   let distance = 0;
   let dragging = false;
   const reset = () => {
-    main.classList.remove('is-photo-dragging', 'photo-drag-commit');
-    main.style.transform = '';
+    moveTarget.classList.remove('is-photo-dragging', 'photo-drag-commit');
+    moveTarget.style.transform = '';
   };
   main.addEventListener('touchstart', (event) => {
     if (photoTransitionBusy) return;
@@ -1147,14 +1147,14 @@ function bindPhotoDrag(main, axis, onCommit, onRelease = () => {}) {
     if (Math.abs(primary) < 6) return;
     dragging = true;
     event.preventDefault();
-    const limit = (axis === 'horizontal' ? main.clientWidth : main.clientHeight) * 0.42;
+    const limit = (axis === 'horizontal' ? moveTarget.clientWidth : moveTarget.clientHeight) * 0.42;
     distance = Math.max(-limit, Math.min(limit, primary * 0.72));
-    main.classList.add('is-photo-dragging');
-    main.style.transform = axis === 'horizontal' ? `translateX(${distance}px)` : `translateY(${distance}px)`;
+    moveTarget.classList.add('is-photo-dragging');
+    moveTarget.style.transform = axis === 'horizontal' ? `translateX(${distance}px)` : `translateY(${distance}px)`;
   }, { passive: false });
   const finish = () => {
     if (!dragging) return;
-    const threshold = Math.min(96, (axis === 'horizontal' ? main.clientWidth : main.clientHeight) * 0.16);
+    const threshold = Math.min(96, (axis === 'horizontal' ? moveTarget.clientWidth : moveTarget.clientHeight) * 0.16);
     const committed = Math.abs(distance) >= threshold;
     onRelease({ dragged: true, committed });
     if (!committed) {
@@ -1163,10 +1163,10 @@ function bindPhotoDrag(main, axis, onCommit, onRelease = () => {}) {
     }
     const direction = distance < 0 ? 1 : -1;
     photoTransitionBusy = true;
-    main.classList.remove('is-photo-dragging');
-    main.classList.add('photo-drag-commit');
-    const finishDistance = (axis === 'horizontal' ? main.clientWidth : main.clientHeight) * (direction > 0 ? -1.08 : 1.08);
-    main.style.transform = axis === 'horizontal' ? `translateX(${finishDistance}px)` : `translateY(${finishDistance}px)`;
+    moveTarget.classList.remove('is-photo-dragging');
+    moveTarget.classList.add('photo-drag-commit');
+    const finishDistance = (axis === 'horizontal' ? moveTarget.clientWidth : moveTarget.clientHeight) * (direction > 0 ? -1.08 : 1.08);
+    moveTarget.style.transform = axis === 'horizontal' ? `translateX(${finishDistance}px)` : `translateY(${finishDistance}px)`;
     window.setTimeout(() => onCommit(direction), 165);
   };
   main.addEventListener('touchend', finish, { passive: true });
@@ -1177,7 +1177,7 @@ function bindPhotoViewerSwipe() {
   const main = byId('photoFullscreenMain');
   if (!viewer || !main) return;
   viewer.querySelectorAll('[data-photo-viewer-direction]').forEach((button) => button.addEventListener('click', () => movePhotoViewer(Number(button.dataset.photoViewerDirection))));
-  bindPhotoDrag(main, 'horizontal', (direction) => movePhotoViewer(direction, { skipExit: true }));
+  bindPhotoDrag(main, 'horizontal', (direction) => movePhotoViewer(direction, { skipExit: true }), () => {}, viewer);
 }
 async function openPhotoViewer(item, transition) {
   const requestId = ++photoViewerRequestId;

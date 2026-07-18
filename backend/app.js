@@ -5,6 +5,7 @@ const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = re
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { GeoPlacesClient, ReverseGeocodeCommand } = require('@aws-sdk/client-geo-places');
+const { LocationClient, SearchPlaceIndexForPositionCommand } = require('@aws-sdk/client-location');
 
 const tableName = process.env.TABLE_NAME;
 const bucketName = process.env.BUCKET_NAME;
@@ -15,11 +16,13 @@ const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 const modelId = process.env.BEDROCK_MODEL_ID || 'global.amazon.nova-2-lite-v1:0';
 const treasurerMember = process.env.TREASURER || '성호';
 const geoPlacesRegion = process.env.GEO_PLACES_REGION || 'ap-northeast-1';
+const photoPlaceIndexName = process.env.PHOTO_PLACE_INDEX_NAME || 'simji-photo-places';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
 const bedrock = new BedrockRuntimeClient({});
 const geoPlaces = new GeoPlacesClient({ region: geoPlacesRegion, maxAttempts: 1 });
+const location = new LocationClient({ region: geoPlacesRegion, maxAttempts: 1 });
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -183,8 +186,27 @@ function addressPart(value) {
   return '';
 }
 
+function compactLocation(values, fallback = '') {
+  const parts = values.map(addressPart).filter(Boolean);
+  const unique = parts.filter((value, index) => !parts.slice(0, index).some((existing) => existing === value));
+  return (unique.join(' · ') || fallback).slice(0, 120);
+}
+
 async function findPhotoRegion(latitude, longitude) {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return '';
+  try {
+    const result = await location.send(new SearchPlaceIndexForPositionCommand({
+      IndexName: photoPlaceIndexName,
+      Position: [longitude, latitude],
+      MaxResults: 1,
+      Language: 'ko',
+    }));
+    const place = result.Results?.[0]?.Place || {};
+    const region = compactLocation([place.Region, place.Municipality, place.SubMunicipality], String(place.Label || '').trim());
+    if (region) return region;
+  } catch (error) {
+    console.warn('Unable to resolve photo region with place index', error.name || 'UnknownError');
+  }
   try {
     const result = await geoPlaces.send(new ReverseGeocodeCommand({
       QueryPosition: [longitude, latitude],
@@ -194,15 +216,13 @@ async function findPhotoRegion(latitude, longitude) {
     }));
     const item = result.ResultItems?.[0] || {};
     const address = item.Address || {};
-    const values = [
+    return compactLocation([
       addressPart(address.Region),
       addressPart(address.SubRegion),
       addressPart(address.Locality),
       addressPart(address.District),
       addressPart(address.Neighborhood),
-    ].filter(Boolean);
-    const unique = values.filter((value, index) => !values.slice(0, index).some((existing) => existing === value));
-    return (unique.join(' · ') || String(item.Title || '').trim()).slice(0, 120);
+    ], String(item.Title || '').trim());
   } catch (error) {
     console.warn('Unable to resolve photo region', error.name || 'UnknownError');
     return '';

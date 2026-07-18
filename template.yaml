@@ -18,6 +18,9 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: global.amazon.nova-2-lite-v1:0
+  PhotoPlaceIndexName:
+    Type: String
+    Default: simji-photo-places
 
 Resources:
   SimjiApi:
@@ -85,6 +88,7 @@ Resources:
           TREASURER: 성호
           BEDROCK_MODEL_ID: !Ref BedrockModelId
           GEO_PLACES_REGION: ap-northeast-1
+          PHOTO_PLACE_INDEX_NAME: !Ref PhotoPlaceIndexName
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref LedgerTable
@@ -102,6 +106,11 @@ Resources:
             Action:
               - geo-places:ReverseGeocode
             Resource: arn:aws:geo-places:ap-northeast-1::provider/default
+        - Statement:
+            Effect: Allow
+            Action:
+              - geo:SearchPlaceIndexForPosition
+            Resource: !Sub arn:${AWS::Partition}:geo:ap-northeast-1:${AWS::AccountId}:place-index/${PhotoPlaceIndexName}
       Events:
         Auth:
           Type: HttpApi

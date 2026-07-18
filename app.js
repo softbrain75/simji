@@ -28,6 +28,7 @@ let mediaSelectionVersion = 0;
 let activeMediaDetailId = '';
 let photoViewerRequestId = 0;
 let photoViewerObjectUrl = '';
+let photoTransitionBusy = false;
 const landscapeMediaQuery = window.matchMedia('(orientation: landscape)');
 const themeColorMeta = document.querySelector('meta[name="theme-color"]');
 const defaultThemeColor = themeColorMeta?.getAttribute('content') || '#f8f8f4';
@@ -542,17 +543,21 @@ function closeMedia() {
   applyPendingAppUpdate();
 }
 function resetPhotoViewer() {
-  setLandscapePhotoViewerActive(false);
+  setPhotoViewerMode('none');
   byId('mediaDetailBackdrop').classList.remove('media-detail-backdrop--viewer');
   byId('mediaDetailContent').closest('.media-detail').classList.remove('media-detail--photo', 'media-detail--viewer');
   if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
   photoViewerObjectUrl = '';
   photoViewerRequestId += 1;
 }
-function setLandscapePhotoViewerActive(active) {
-  document.documentElement.classList.toggle('landscape-photo-viewer', active);
-  document.body.classList.toggle('landscape-photo-viewer', active);
-  themeColorMeta?.setAttribute('content', active ? '#050806' : defaultThemeColor);
+function setPhotoViewerMode(mode) {
+  const isPhotoViewer = mode !== 'none';
+  const isLandscape = mode === 'landscape';
+  document.documentElement.classList.toggle('photo-detail-viewer', isPhotoViewer);
+  document.body.classList.toggle('photo-detail-viewer', isPhotoViewer);
+  document.documentElement.classList.toggle('landscape-photo-viewer', isLandscape);
+  document.body.classList.toggle('landscape-photo-viewer', isLandscape);
+  themeColorMeta?.setAttribute('content', isLandscape ? '#050806' : isPhotoViewer ? '#243229' : defaultThemeColor);
 }
 function closeMediaDetail() {
   byId('mediaDetailBackdrop').hidden = true;
@@ -939,7 +944,11 @@ function mediaCarouselCenterMarkup(item, sourceUrl) {
   }
   return `<div class="media-photo-main" id="mediaPhotoMain" role="button" tabindex="0" aria-label="사진을 누르면 삭제 메뉴 표시" aria-expanded="false"><img class="media-detail-image" src="${escapeHtml(sourceUrl)}" alt="사진" /></div>`;
 }
-function mediaPhotoCarouselMarkup(item, sourceUrl) {
+function mediaTransitionEnterClass(transition) {
+  if (!transition) return '';
+  return ` photo-transition-enter photo-transition-enter--${transition.axis} photo-transition-enter--${transition.direction > 0 ? 'next' : 'previous'}`;
+}
+function mediaPhotoCarouselMarkup(item, sourceUrl, transition) {
   const items = mediaGalleryItems();
   const currentIndex = items.findIndex((entry) => entry.id === item.id);
   const previous = currentIndex > 0 ? items[currentIndex - 1] : (items.length > 1 ? items.at(-1) : null);
@@ -947,15 +956,15 @@ function mediaPhotoCarouselMarkup(item, sourceUrl) {
   const deleteControl = item.person === activeMember
     ? `<button class="media-photo-delete" id="mediaPhotoDeleteButton" type="button" hidden aria-label="${item.mediaType === 'photo' ? '이 사진 삭제' : '이 영상 링크 삭제'}" title="${item.mediaType === 'photo' ? '이 사진 삭제' : '이 영상 링크 삭제'}">🗑</button>`
     : '';
-  return `<div class="media-photo-carousel" id="mediaPhotoCarousel">${mediaPhotoPeekMarkup(previous, -1)}${mediaCarouselCenterMarkup(item, sourceUrl)}${mediaPhotoPeekMarkup(next, 1)}${deleteControl}</div>`;
+  return `<div class="media-photo-carousel${mediaTransitionEnterClass(transition)}" id="mediaPhotoCarousel">${mediaPhotoPeekMarkup(previous, -1)}${mediaCarouselCenterMarkup(item, sourceUrl)}${mediaPhotoPeekMarkup(next, 1)}${deleteControl}</div>`;
 }
-function renderMediaDetail(item, photoUrl = '') {
+function renderMediaDetail(item, photoUrl = '', transition) {
   const isVideo = item.mediaType === 'video';
   const dialog = byId('mediaDetailContent').closest('.media-detail');
   dialog.classList.toggle('media-detail--photo', !isVideo);
   const location = !isVideo && item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
   const sourceUrl = isVideo ? item.thumbnailUrl : photoUrl;
-  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content${isVideo ? '' : ' media-detail-content--photo'}">${mediaPhotoCarouselMarkup(item, sourceUrl)}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}</div></div>`;
+  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content${isVideo ? '' : ' media-detail-content--photo'}">${mediaPhotoCarouselMarkup(item, sourceUrl, transition)}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}</div></div>`;
   bindMediaPhotoCarousel(item);
 }
 async function moveMediaPhoto(direction) {
@@ -973,7 +982,12 @@ async function moveMediaPhoto(direction) {
     showToast('보관된 사진·영상이 한 개예요.');
     return;
   }
-  await openMediaDetail(target);
+  if (!await animatePhotoTransition(direction, 'vertical')) return;
+  try {
+    await openMediaDetail(target, { direction, axis: 'vertical' });
+  } finally {
+    photoTransitionBusy = false;
+  }
 }
 function bindMediaPhotoCarousel(item) {
   const carousel = byId('mediaPhotoCarousel');
@@ -1061,31 +1075,31 @@ function photoFullscreenPeekMarkup(item, direction) {
   const label = direction < 0 ? '이전 사진 보기' : '다음 사진 보기';
   return `<button class="photo-fullscreen-peek photo-fullscreen-peek--${position}" type="button" data-photo-viewer-direction="${direction}" aria-label="${label}"><img src="${escapeHtml(item.thumbnailUrl)}" alt="" /></button>`;
 }
-function renderPhotoViewer(item, photoUrl) {
+function renderPhotoViewer(item, photoUrl, transition) {
   const backdrop = byId('mediaDetailBackdrop');
   const dialog = byId('mediaDetailContent').closest('.media-detail');
   const photos = photoViewerItems();
   const currentIndex = photos.findIndex((entry) => entry.id === item.id);
   const previous = currentIndex > 0 ? photos[currentIndex - 1] : (photos.length > 1 ? photos.at(-1) : null);
   const next = currentIndex >= 0 && currentIndex < photos.length - 1 ? photos[currentIndex + 1] : (photos.length > 1 ? photos[0] : null);
-  setLandscapePhotoViewerActive(true);
+  setPhotoViewerMode('landscape');
   backdrop.classList.add('media-detail-backdrop--viewer');
   dialog.classList.remove('media-detail--photo');
   dialog.classList.add('media-detail--viewer');
-  byId('mediaDetailContent').innerHTML = `<div class="photo-fullscreen-viewer" id="photoFullscreenViewer">${photoFullscreenPeekMarkup(previous, -1)}<div class="photo-fullscreen-main" id="photoFullscreenMain"><img src="${escapeHtml(photoUrl)}" alt="사진" /></div>${photoFullscreenPeekMarkup(next, 1)}</div>`;
+  byId('mediaDetailContent').innerHTML = `<div class="photo-fullscreen-viewer${mediaTransitionEnterClass(transition)}" id="photoFullscreenViewer">${photoFullscreenPeekMarkup(previous, -1)}<div class="photo-fullscreen-main" id="photoFullscreenMain"><img src="${escapeHtml(photoUrl)}" alt="사진" /></div>${photoFullscreenPeekMarkup(next, 1)}</div>`;
   bindPhotoViewerSwipe();
 }
-function renderPhotoDetail(item, photoUrl) {
+function renderPhotoDetail(item, photoUrl, transition) {
   if (landscapeMediaQuery.matches) {
-    renderPhotoViewer(item, photoUrl);
+    renderPhotoViewer(item, photoUrl, transition);
     return;
   }
   const backdrop = byId('mediaDetailBackdrop');
   const dialog = byId('mediaDetailContent').closest('.media-detail');
-  setLandscapePhotoViewerActive(false);
+  setPhotoViewerMode('portrait');
   backdrop.classList.remove('media-detail-backdrop--viewer');
   dialog.classList.remove('media-detail--viewer');
-  renderMediaDetail(item, photoUrl);
+  renderMediaDetail(item, photoUrl, transition);
 }
 async function movePhotoViewer(direction) {
   let photos = photoViewerItems();
@@ -1102,7 +1116,21 @@ async function movePhotoViewer(direction) {
     showToast(direction > 0 ? '마지막 사진이에요.' : '첫 사진이에요.');
     return;
   }
-  await openMediaDetail(target);
+  if (!await animatePhotoTransition(direction, 'horizontal')) return;
+  try {
+    await openMediaDetail(target, { direction, axis: 'horizontal' });
+  } finally {
+    photoTransitionBusy = false;
+  }
+}
+async function animatePhotoTransition(direction, axis) {
+  if (photoTransitionBusy) return false;
+  const current = byId(axis === 'horizontal' ? 'photoFullscreenViewer' : 'mediaPhotoCarousel');
+  if (!current) return true;
+  photoTransitionBusy = true;
+  current.classList.add('photo-transition-exit', `photo-transition-exit--${axis}`, `photo-transition-exit--${direction > 0 ? 'next' : 'previous'}`);
+  await new Promise((resolve) => window.setTimeout(resolve, 145));
+  return true;
 }
 function bindPhotoViewerSwipe() {
   const viewer = byId('photoFullscreenViewer');
@@ -1124,13 +1152,13 @@ function bindPhotoViewerSwipe() {
     movePhotoViewer(distanceX < 0 ? 1 : -1);
   }, { passive: true });
 }
-async function openPhotoViewer(item) {
+async function openPhotoViewer(item, transition) {
   const requestId = ++photoViewerRequestId;
   if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
   photoViewerObjectUrl = '';
   const dialog = byId('mediaDetailContent').closest('.media-detail');
   const fullscreen = landscapeMediaQuery.matches;
-  setLandscapePhotoViewerActive(fullscreen);
+  setPhotoViewerMode(fullscreen ? 'landscape' : 'portrait');
   byId('mediaDetailBackdrop').classList.toggle('media-detail-backdrop--viewer', fullscreen);
   dialog.classList.toggle('media-detail--photo', !fullscreen);
   dialog.classList.toggle('media-detail--viewer', fullscreen);
@@ -1138,29 +1166,29 @@ async function openPhotoViewer(item) {
   const cachedUrl = await cachedPhotoViewerUrl(item.id);
   if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
   if (cachedUrl) {
-    renderPhotoDetail(item, cachedUrl);
+    renderPhotoDetail(item, cachedUrl, transition);
     return;
   }
   try {
     const result = await api(`/media/${encodeURIComponent(item.id)}`);
     if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
-    renderPhotoDetail(item, result.item.photoUrl);
+    renderPhotoDetail(item, result.item.photoUrl, transition);
     cacheViewedPhoto(item.id, result.item.photoUrl);
   } catch (error) {
     byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오지 못했어요.</p>';
     showToast(error.message || '사진을 불러오지 못했어요.');
   }
 }
-async function openMediaDetail(item) {
+async function openMediaDetail(item, transition) {
   activeMediaDetailId = item.id;
   byId('mediaDetailBackdrop').hidden = false;
   if (item.mediaType === 'video') {
     resetPhotoViewer();
     activeMediaDetailId = item.id;
-    renderMediaDetail(item);
+    renderMediaDetail(item, '', transition);
     return;
   }
-  await openPhotoViewer(item);
+  await openPhotoViewer(item, transition);
 }
 async function deleteMediaItem(item, button) {
   if (!window.confirm(item.mediaType === 'photo' ? '이 사진을 삭제할까요? 삭제 후에는 되돌릴 수 없어요.' : '이 유튜브 링크를 삭제할까요?')) return;

@@ -1141,6 +1141,40 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
     track.style.transition = animate ? 'transform 320ms cubic-bezier(.22,.8,.25,1)' : 'none';
     track.style.transform = axis === 'horizontal' ? `translate3d(${offset}px,0,0)` : `translate3d(0,${offset}px,0)`;
   };
+  const restingImagePosition = (position) => {
+    if (axis !== 'vertical') return 'center center';
+    if (position === 'previous') return 'center bottom';
+    if (position === 'next') return 'center top';
+    return 'center center';
+  };
+  const setRestingImagePositions = () => {
+    Array.from(track.children).forEach((slide) => {
+      const image = slide.querySelector('img');
+      if (!image) return;
+      image.style.transition = 'none';
+      image.style.objectPosition = restingImagePosition(slide.dataset.photoPosition);
+    });
+    window.requestAnimationFrame(() => {
+      Array.from(track.children).forEach((slide) => {
+        const image = slide.querySelector('img');
+        if (image) image.style.transition = '';
+      });
+    });
+  };
+  const animateImagePositions = (direction) => {
+    if (axis !== 'vertical') return;
+    const positions = direction > 0
+      ? ['center bottom', 'center bottom', 'center center']
+      : ['center center', 'center top', 'center top'];
+    const images = Array.from(track.children).map((slide) => slide.querySelector('img'));
+    images.forEach((image) => {
+      if (image) image.style.transition = 'object-position 320ms cubic-bezier(.22,.8,.25,1)';
+    });
+    void track.offsetHeight;
+    images.forEach((image, index) => {
+      if (image) image.style.objectPosition = positions[index];
+    });
+  };
   const layout = () => {
     const style = window.getComputedStyle(reel);
     state.size = getDimension();
@@ -1182,6 +1216,7 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
   };
   const refreshSlots = () => {
     Array.from(track.children).forEach((slide, index) => fillRealPhotoSlide(slide, state.slots[index], index === 0 ? 'previous' : index === 1 ? 'current' : 'next'));
+    setRestingImagePositions();
     updateRealPhotoMetadata(state);
     prime(state.slots[0]);
     prime(state.slots[2]);
@@ -1203,6 +1238,7 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
     if (state.settling || state.slots[0].id === state.slots[1].id) return;
     state.settling = true;
     const targetOffset = state.initialOffset - (direction * state.cardSize);
+    animateImagePositions(direction);
     setTransform(targetOffset, true);
     let complete = false;
     const finish = () => {
@@ -1220,6 +1256,7 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
   const snapBack = () => setTransform(state.initialOffset, true);
   track.innerHTML = `${realPhotoSlideMarkup(state.slots[0], 'previous')}${realPhotoSlideMarkup(state.slots[1], 'current')}${realPhotoSlideMarkup(state.slots[2], 'next')}`;
   layout();
+  setRestingImagePositions();
   updateRealPhotoMetadata(state);
   prime(state.slots[0]);
   prime(state.slots[2]);

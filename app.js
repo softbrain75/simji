@@ -34,6 +34,11 @@ let pendingAppUpdate = false;
 function hasOpenModal() {
   return Array.from(document.querySelectorAll('.modal-backdrop')).some((backdrop) => !backdrop.hidden);
 }
+function syncModalScrollLock() {
+  const locked = hasOpenModal();
+  document.documentElement.classList.toggle('modal-open', locked);
+  document.body.classList.toggle('modal-open', locked);
+}
 function isSafeToReload() {
   const activeElement = document.activeElement;
   const activeField = activeElement?.matches('input, textarea, select')
@@ -1083,6 +1088,9 @@ byId('refreshApp').addEventListener('click', async () => {
   window.setTimeout(() => window.location.reload(), 450);
 });
 document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeAllModals(); }));
+const modalScrollObserver = new MutationObserver(syncModalScrollLock);
+document.querySelectorAll('.modal-backdrop').forEach((backdrop) => modalScrollObserver.observe(backdrop, { attributes: true, attributeFilter: ['hidden'] }));
+syncModalScrollLock();
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAllModals(); });
 document.querySelectorAll('.main-tab').forEach((button) => button.addEventListener('click', () => setActiveView(button.dataset.view)));
 document.querySelectorAll('.media-filter').forEach((button) => button.addEventListener('click', () => {

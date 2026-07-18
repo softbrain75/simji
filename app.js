@@ -115,13 +115,28 @@ function bindDetailPaymentButton(record) {
   if (!button) return;
   button.addEventListener('click', () => savePaymentStatus(record, button.dataset.paymentStatus, button));
 }
+function placeExpenseButtonInline(hasPayableExpenses) {
+  const button = byId('openExpense');
+  if (activeMember === treasurerMember && hasPayableExpenses) {
+    byId('paymentPanel').after(button);
+    button.classList.add('add-expense--inline');
+  } else {
+    byId('appShell').append(button);
+    button.classList.remove('add-expense--inline');
+  }
+}
 function renderPaymentPanel(records) {
   const panel = byId('paymentPanel');
-  if (activeMember !== treasurerMember) { panel.hidden = true; return; }
+  if (activeMember !== treasurerMember) {
+    panel.hidden = true;
+    placeExpenseButtonInline(false);
+    return;
+  }
 
   panel.hidden = false;
   const payable = records.filter((record) => record.type === 'expense' && paymentState(record) !== 'paid')
     .sort((a, b) => new Date(a.date) - new Date(b.date));
+  placeExpenseButtonInline(payable.length > 0);
   const total = payable.reduce((sum, record) => sum + Number(record.amount || 0), 0);
   byId('paymentCount').textContent = `${payable.length}건`;
   byId('paymentSummary').textContent = payable.length

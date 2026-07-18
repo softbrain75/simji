@@ -11,3 +11,5 @@
 .refund-fields .field input { font-size:14px; }
 .detail-refund-fields { margin-top:-1px; }
 .ledger-section { margin-top:44px; }
+.detail-readonly { margin:20px 0 0; padding:12px 13px; color:#617167; background:#f0f4ef; border-radius:12px; font-size:12px; line-height:1.5; }
+.payment-detail-action { width:100%; margin-top:11px; }.payment-detail-action.is-reset { color:#8a654c; background:#f6eee5; }

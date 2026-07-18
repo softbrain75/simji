@@ -12,6 +12,7 @@ const memberNames = (process.env.MEMBERS || '').split(',').map((name) => name.tr
 const loginSuffix = process.env.LOGIN_SUFFIX || '0717';
 const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 const modelId = process.env.BEDROCK_MODEL_ID || 'global.amazon.nova-2-lite-v1:0';
+const treasurerMember = process.env.TREASURER || '성호';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -119,7 +120,8 @@ async function publicRecord(record) {
   const proofUrl = record.receiptKey
     ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucketName, Key: record.receiptKey }), { expiresIn: 60 * 30 })
     : undefined;
-  return { id: record.id, type: record.type, amount: record.amount, date: record.date, memo: record.memo, person: record.person, refundBank: record.refundBank, refundAccount: record.refundAccount, needsReview: record.needsReview, proofUrl };
+  const paymentStatus = record.type === 'expense' && ['paid', 'pending'].includes(record.paymentStatus) ? record.paymentStatus : record.type === 'expense' ? 'unconfirmed' : undefined;
+  return { id: record.id, type: record.type, amount: record.amount, date: record.date, memo: record.memo, person: record.person, refundBank: record.refundBank, refundAccount: record.refundAccount, paymentStatus, paymentCompletedAt: record.paymentCompletedAt, paymentCompletedBy: record.paymentCompletedBy, needsReview: record.needsReview, proofUrl };
 }
 
 async function authenticate(event) {
@@ -169,6 +171,7 @@ async function scanAndSave(event, member) {
     person: member,
     refundBank,
     refundAccount,
+    paymentStatus: 'pending',
     receiptKey,
     needsReview: analyzed.needsReview,
     createdAt: new Date().toISOString(),
@@ -238,6 +241,7 @@ async function updateExpense(event, member) {
 
   const record = await findExpense(id);
   if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+  if (record.person !== member) return response(403, { message: '지출을 등록한 멤버만 수정할 수 있습니다.' });
 
   const { amount: rawAmount, date, memo = '', refundBank: rawRefundBank, refundAccount: rawRefundAccount } = parseBody(event);
   const amount = normalizeAmount(rawAmount);
@@ -286,6 +290,48 @@ async function updateExpense(event, member) {
   return response(200, { record: await publicRecord(updatedRecord) });
 }
 
+async function updatePaymentStatus(event, member) {
+  if (member !== treasurerMember) return response(403, { message: '통장 담당자만 입금 상태를 처리할 수 있습니다.' });
+
+  const id = event.pathParameters?.id;
+  if (!id) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+  const record = await findExpense(id);
+  if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
+
+  const status = String(parseBody(event).status || '').trim();
+  if (!['paid', 'pending'].includes(status)) return response(400, { message: '입금 상태를 확인해 주세요.' });
+
+  const isPaid = status === 'paid';
+  const updatedAt = new Date().toISOString();
+  const updatedRecord = {
+    ...record,
+    paymentStatus: status,
+    updatedAt,
+    updatedBy: member,
+  };
+  if (isPaid) {
+    updatedRecord.paymentCompletedAt = updatedAt;
+    updatedRecord.paymentCompletedBy = member;
+  } else {
+    delete updatedRecord.paymentCompletedAt;
+    delete updatedRecord.paymentCompletedBy;
+  }
+
+  await ddb.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { pk: record.pk, sk: record.sk },
+    UpdateExpression: isPaid
+      ? 'SET #paymentStatus = :paymentStatus, paymentCompletedAt = :paymentCompletedAt, paymentCompletedBy = :paymentCompletedBy, updatedAt = :updatedAt, updatedBy = :updatedBy'
+      : 'SET #paymentStatus = :paymentStatus, updatedAt = :updatedAt, updatedBy = :updatedBy REMOVE paymentCompletedAt, paymentCompletedBy',
+    ExpressionAttributeNames: { '#paymentStatus': 'paymentStatus' },
+    ExpressionAttributeValues: isPaid
+      ? { ':paymentStatus': status, ':paymentCompletedAt': updatedAt, ':paymentCompletedBy': member, ':updatedAt': updatedAt, ':updatedBy': member }
+      : { ':paymentStatus': status, ':updatedAt': updatedAt, ':updatedBy': member },
+    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+  }));
+  return response(200, { record: await publicRecord(updatedRecord) });
+}
+
 async function deleteExpense(event, member) {
   const id = event.pathParameters?.id;
   if (!id) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
@@ -321,6 +367,7 @@ exports.handler = async (event) => {
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'POST' && path === '/expenses/scan') return await scanAndSave(event, member);
     if (method === 'POST' && path === '/incomes/scan') return await scanIncomeAndSave(event);
+    if (method === 'PATCH' && /^\/expenses\/[^/]+\/payment$/.test(path)) return await updatePaymentStatus(event, member);
     if (method === 'PATCH' && /^\/expenses\/[^/]+$/.test(path)) return await updateExpense(event, member);
     if (method === 'DELETE' && /^\/expenses\/[^/]+$/.test(path)) return await deleteExpense(event, member);
     return response(404, { message: '요청한 기능을 찾을 수 없습니다.' });

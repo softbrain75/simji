@@ -50,6 +50,12 @@
         </div>
       </section>
 
+      <section class="payment-panel" id="paymentPanel" aria-labelledby="paymentTitle" hidden>
+        <div class="payment-panel__header"><div><p>TRANSFER LIST</p><h2 id="paymentTitle">송금할 지출</h2></div><span id="paymentCount">0건</span></div>
+        <p class="payment-panel__summary" id="paymentSummary">송금할 지출을 확인해 주세요.</p>
+        <div class="payment-list" id="paymentList" aria-live="polite"></div>
+      </section>
+
       <section class="ledger-section">
         <div class="section-title"><div><h2>거래내역</h2></div><span id="recordCount">0건</span></div>
         <nav class="filters" aria-label="기록 필터">

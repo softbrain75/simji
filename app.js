@@ -12,6 +12,7 @@ const memberStorageKey = 'simji-member-v1';
 const sessionStorageKey = 'simji-session-v1';
 const openingBalance = 1340278;
 const members = ['종남', '인기', '상훈', '민철', '공근', '성호'];
+const treasurerMember = '성호';
 const apiUrl = (window.SIMJI_CONFIG?.apiUrl || '').replace(/\/$/, '');
 const cloudMode = Boolean(apiUrl);
 
@@ -89,6 +90,50 @@ function updateCreateButton() {
     : '<span>＋</span> 영수증으로 지출 등록';
 }
 
+function paymentState(record) {
+  if (record.paymentStatus === 'paid') return 'paid';
+  if (record.paymentStatus === 'pending') return 'pending';
+  return 'unconfirmed';
+}
+function paymentStatusText(record) {
+  const state = paymentState(record);
+  if (state === 'paid') {
+    const completedDate = String(record.paymentCompletedAt || '').slice(0, 10);
+    return completedDate ? `입금 완료 · ${formatDate(completedDate)}` : '입금 완료';
+  }
+  return state === 'pending' ? '입금 대기' : '입금 확인 필요';
+}
+function paymentActionMarkup(record) {
+  if (activeMember !== treasurerMember || record.type !== 'expense') return '';
+  const state = paymentState(record);
+  const nextStatus = state === 'paid' ? 'pending' : 'paid';
+  const label = state === 'paid' ? '입금 완료 취소' : '입금 완료';
+  return `<button class="payment-action payment-detail-action${state === 'paid' ? ' is-reset' : ''}" id="detailPaymentButton" type="button" data-payment-status="${nextStatus}">${label}</button>`;
+}
+function bindDetailPaymentButton(record) {
+  const button = byId('detailPaymentButton');
+  if (!button) return;
+  button.addEventListener('click', () => savePaymentStatus(record, button.dataset.paymentStatus, button));
+}
+function renderPaymentPanel(records) {
+  const panel = byId('paymentPanel');
+  if (activeMember !== treasurerMember) { panel.hidden = true; return; }
+
+  panel.hidden = false;
+  const payable = records.filter((record) => record.type === 'expense' && paymentState(record) !== 'paid')
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  const total = payable.reduce((sum, record) => sum + Number(record.amount || 0), 0);
+  byId('paymentCount').textContent = `${payable.length}건`;
+  byId('paymentSummary').textContent = payable.length
+    ? `송금할 지출 ${payable.length}건 · ${formatMoney(total)}`
+    : '현재 송금할 지출이 없어요.';
+  byId('paymentList').innerHTML = payable.length ? payable.map((record) => {
+    const hasAccount = Boolean(record.refundBank && record.refundAccount);
+    const account = hasAccount ? `${record.refundBank} ${record.refundAccount}` : '환불 계좌를 등록해 주세요.';
+    return `<article class="payment-card"><div class="payment-card__head"><div><p class="payment-card__person">${escapeHtml(record.person || record.member || '지출자 확인 필요')}</p><span class="payment-card__memo">${escapeHtml(record.memo || '영수증 지출')}</span></div><strong class="payment-card__amount">${formatMoney(record.amount)}</strong></div><p class="payment-card__account${hasAccount ? '' : ' is-missing'}">${escapeHtml(account)}</p><div class="payment-card__footer"><span class="payment-card__state">${paymentStatusText(record)}</span><button class="payment-action" type="button" data-payment-id="${escapeHtml(record.id)}" data-payment-status="paid">입금 완료</button></div></article>`;
+  }).join('') : '<p class="payment-empty">모든 환불 송금이 완료되었어요.</p>';
+}
+
 function render() {
   const records = [...recordsCache].sort((a, b) => new Date(b.date) - new Date(a.date));
   const income = records.filter((record) => record.type === 'income').reduce((sum, record) => sum + Number(record.amount || 0), 0);
@@ -98,6 +143,7 @@ function render() {
   byId('recordCount').textContent = `${records.length}건`;
   byId('balanceAmount').textContent = formatMoney(openingBalance + income - expense);
   byId('balanceHint').textContent = `기초 잔액 ${formatMoney(openingBalance)}과 기록한 지출 기준이에요.`;
+  renderPaymentPanel(records);
 
   const filtered = records.filter((record) => activeFilter === 'all' || record.type === activeFilter);
   byId('ledger').innerHTML = filtered.map((record) => {
@@ -105,7 +151,8 @@ function render() {
     const person = record.type === 'income' ? `${record.person || '입금자 확인 필요'} · 입금 증빙 사진 있음` : `${record.person || record.member} · 증빙 사진 있음`;
     const proofUrl = record.proofUrl || record.proof;
     const icon = proofUrl ? `<img src="${proofUrl}" alt="" />` : record.type === 'income' ? '↓' : '⌑';
-    return `<button class="ledger-row ledger-row--${record.type}" data-id="${record.id}"><span class="ledger-row__icon">${icon}</span><span class="ledger-row__main"><b>${escapeHtml(label)}</b><span>${escapeHtml(person)} · ${formatDate(record.date)}</span></span><span class="ledger-row__amount"><b>${record.type === 'income' ? '+' : '−'}${formatMoney(record.amount)}</b><span>${record.type === 'income' ? '입금' : '영수증'}</span></span></button>`;
+    const paymentBadge = record.type === 'expense' ? `<span class="payment-badge is-${paymentState(record)}">${paymentStatusText(record)}</span>` : '';
+    return `<button class="ledger-row ledger-row--${record.type}" data-id="${record.id}"><span class="ledger-row__icon">${icon}</span><span class="ledger-row__main"><b>${escapeHtml(label)}</b><span>${escapeHtml(person)} · ${formatDate(record.date)}</span>${paymentBadge}</span><span class="ledger-row__amount"><b>${record.type === 'income' ? '+' : '−'}${formatMoney(record.amount)}</b><span>${record.type === 'income' ? '입금' : '영수증'}</span></span></button>`;
   }).join('');
   byId('emptyState').hidden = filtered.length > 0;
   updateCreateButton();
@@ -155,8 +202,17 @@ function compressImage(file) {
 function openDetail(record) {
   if (record.type === 'expense') {
     const proofUrl = record.proofUrl || record.proof;
+    const canEdit = record.person === activeMember;
     byId('detailType').textContent = 'EXPENSE';
     byId('detailTitle').textContent = record.memo || '영수증 지출';
+    if (!canEdit) {
+      const refundAccount = record.refundBank && record.refundAccount ? `${record.refundBank} ${record.refundAccount}` : '등록된 계좌 없음';
+      const refundRow = activeMember === treasurerMember ? `<div><dt>환불 받을 계좌</dt><dd>${escapeHtml(refundAccount)}</dd></div>` : '';
+      byId('detailContent').innerHTML = `<div class="detail-content">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-amount">−${formatMoney(record.amount)}</p><dl class="detail-list"><div><dt>기록 날짜</dt><dd>${formatDate(record.date)}</dd></div><div><dt>지출 등록자</dt><dd>${escapeHtml(record.person || record.member || '')}</dd></div>${refundRow}${record.memo ? `<div><dt>메모</dt><dd>${escapeHtml(record.memo)}</dd></div>` : ''}</dl><p class="detail-readonly">지출 등록자만 수정하거나 삭제할 수 있어요.</p>${paymentActionMarkup(record)}</div>`;
+      bindDetailPaymentButton(record);
+      byId('detailBackdrop').hidden = false;
+      return;
+    }
     byId('detailContent').innerHTML = `<form class="detail-content detail-edit-form" id="detailEditForm">${proofUrl ? `<img class="detail-proof" src="${proofUrl}" alt="등록한 영수증" />` : ''}<p class="detail-edit-hint">영수증을 보고 금액·날짜·메모를 고친 뒤 저장하세요.</p><label class="field">금액<input name="amount" type="number" min="1" max="100000000" inputmode="numeric" value="${Number(record.amount) || ''}" required /></label><label class="field">기록 날짜<input name="date" type="date" value="${escapeHtml(record.date)}" required /></label><label class="field field--last">메모 <span>(선택)</span><input name="memo" maxlength="80" value="${escapeHtml(record.memo || '')}" placeholder="예: 7월 정기모임 식사" /></label><p class="detail-person">지출 등록자 · ${escapeHtml(record.person || record.member || '')}</p><button class="save-expense detail-save" id="detailSaveButton" type="submit">수정 저장하기 <span>→</span></button></form>`;
     const editForm = byId('detailEditForm');
     enableAmountCommas(editForm.elements.amount);
@@ -165,13 +221,15 @@ function openDetail(record) {
     refundFields.innerHTML = `<p class="refund-title">환불 받을 계좌</p><div class="two-fields"><label class="field">은행명<input name="refundBank" maxlength="20" autocomplete="off" value="${escapeHtml(record.refundBank || '')}" placeholder="예: 국민" /></label><label class="field">계좌번호<input name="refundAccount" inputmode="numeric" maxlength="30" autocomplete="off" value="${escapeHtml(record.refundAccount || '')}" placeholder="숫자만 입력" /></label></div>`;
     editForm.insertBefore(refundFields, editForm.querySelector('.detail-person'));
     editForm.addEventListener('submit', (event) => saveExpenseEdit(event, record));
-    if (record.person === activeMember) {
-      const deleteButton = document.createElement('button');
-      deleteButton.type = 'button';
-      deleteButton.className = 'delete-expense';
-      deleteButton.textContent = '이 지출 삭제하기';
-      deleteButton.addEventListener('click', () => deleteExpense(record, deleteButton));
-      editForm.append(deleteButton);
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'delete-expense';
+    deleteButton.textContent = '이 지출 삭제하기';
+    deleteButton.addEventListener('click', () => deleteExpense(record, deleteButton));
+    editForm.append(deleteButton);
+    if (activeMember === treasurerMember) {
+      editForm.insertAdjacentHTML('beforeend', paymentActionMarkup(record));
+      bindDetailPaymentButton(record);
     }
     byId('detailBackdrop').hidden = false;
     return;
@@ -185,6 +243,7 @@ function openDetail(record) {
 
 async function saveExpenseEdit(event, record) {
   event.preventDefault();
+  if (record.person !== activeMember) { showToast('지출 등록자만 수정할 수 있어요.'); return; }
   const form = new FormData(event.currentTarget);
   const amount = parseAmountInput(form.get('amount'));
   const date = String(form.get('date') || '');
@@ -212,6 +271,40 @@ async function saveExpenseEdit(event, record) {
   } finally {
     button.disabled = false;
     button.innerHTML = '수정 저장하기 <span>→</span>';
+  }
+}
+
+async function savePaymentStatus(record, status, button) {
+  if (activeMember !== treasurerMember) { showToast('통장 담당자만 입금 상태를 처리할 수 있어요.'); return; }
+  const isPaid = status === 'paid';
+  const account = record.refundBank && record.refundAccount ? `${record.refundBank} ${record.refundAccount}` : '등록된 계좌 없음';
+  const confirmation = isPaid
+    ? `${record.person || record.member} · ${formatMoney(record.amount)}\n${account}\n입금을 완료했나요?`
+    : `${record.person || record.member} 지출의 입금 완료 표시를 취소할까요?`;
+  if (!window.confirm(confirmation)) return;
+
+  button.disabled = true;
+  button.textContent = isPaid ? '처리 중…' : '취소 중…';
+  try {
+    if (cloudMode) {
+      await api(`/expenses/${encodeURIComponent(record.id)}/payment`, { method: 'PATCH', body: { status } });
+    } else {
+      const paymentCompletedAt = isPaid ? new Date().toISOString() : undefined;
+      const records = getLocalRecords().map((item) => (item.id === record.id ? {
+        ...item,
+        paymentStatus: status,
+        paymentCompletedAt,
+        paymentCompletedBy: isPaid ? treasurerMember : undefined,
+      } : item));
+      saveLocalRecords(records);
+    }
+    byId('detailBackdrop').hidden = true;
+    await loadRecords();
+    showToast(isPaid ? '입금 완료로 표시했어요.' : '입금 대기로 되돌렸어요.');
+  } catch (error) {
+    showToast(error.message || '입금 상태를 저장하지 못했어요.');
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -367,6 +460,12 @@ document.querySelectorAll('.filter').forEach((button) => button.addEventListener
 byId('ledger').addEventListener('click', (event) => {
   const row = event.target.closest('.ledger-row');
   if (row) openDetail(recordsCache.find((record) => record.id === row.dataset.id));
+});
+byId('paymentList').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-payment-id]');
+  if (!button) return;
+  const record = recordsCache.find((item) => item.id === button.dataset.paymentId);
+  if (record) savePaymentStatus(record, button.dataset.paymentStatus, button);
 });
 byId('memberButton').addEventListener('click', () => {
   if (window.confirm('다른 멤버로 이 기기를 사용할까요?')) signOut();

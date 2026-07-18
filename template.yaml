@@ -82,6 +82,7 @@ Resources:
           SESSION_SECRET: !Ref SessionSecret
           LOGIN_SUFFIX: !Ref LoginSuffix
           MEMBERS: 종남,인기,상훈,민철,공근,성호
+          TREASURER: 성호
           BEDROCK_MODEL_ID: !Ref BedrockModelId
       Policies:
         - DynamoDBCrudPolicy:
@@ -125,6 +126,12 @@ Resources:
           Properties:
             ApiId: !Ref SimjiApi
             Path: /expenses/{id}
+            Method: PATCH
+        UpdatePaymentStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /expenses/{id}/payment
             Method: PATCH
         DeleteExpense:
           Type: HttpApi

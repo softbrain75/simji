@@ -967,7 +967,7 @@ function renderMediaDetail(item, photoUrl = '', transition) {
   byId('mediaDetailContent').innerHTML = `<div class="media-detail-content${isVideo ? '' : ' media-detail-content--photo'}">${mediaPhotoCarouselMarkup(item, sourceUrl, transition)}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}</div></div>`;
   bindMediaPhotoCarousel(item);
 }
-async function moveMediaPhoto(direction) {
+async function moveMediaPhoto(direction, { skipExit = false } = {}) {
   let items = mediaGalleryItems();
   let currentIndex = items.findIndex((item) => item.id === activeMediaDetailId);
   let target = items[currentIndex + direction];
@@ -982,7 +982,7 @@ async function moveMediaPhoto(direction) {
     showToast('보관된 사진·영상이 한 개예요.');
     return;
   }
-  if (!await animatePhotoTransition(direction, 'vertical')) return;
+  if (!skipExit && !await animatePhotoTransition(direction, 'vertical')) return;
   try {
     await openMediaDetail(target, { direction, axis: 'vertical' });
   } finally {
@@ -1002,8 +1002,6 @@ function bindMediaPhotoCarousel(item) {
     deleteButton.hidden = !deleteButton.hidden;
     main.setAttribute('aria-expanded', String(!deleteButton.hidden));
   };
-  let startX = 0;
-  let startY = 0;
   let ignoreNextClick = false;
   main.addEventListener('click', (event) => {
     if (ignoreNextClick) { ignoreNextClick = false; return; }
@@ -1021,20 +1019,11 @@ function bindMediaPhotoCarousel(item) {
     event.preventDefault();
     toggleDeleteControl();
   });
-  main.addEventListener('touchstart', (event) => {
-    const touch = event.changedTouches[0];
-    startX = touch.clientX;
-    startY = touch.clientY;
-  }, { passive: true });
-  main.addEventListener('touchend', (event) => {
-    const touch = event.changedTouches[0];
-    const distanceX = touch.clientX - startX;
-    const distanceY = touch.clientY - startY;
-    if (Math.abs(distanceY) < 54 || Math.abs(distanceY) < Math.abs(distanceX) * 1.3) return;
+  bindPhotoDrag(main, 'vertical', (direction) => moveMediaPhoto(direction, { skipExit: true }), ({ dragged }) => {
+    if (!dragged) return;
     ignoreNextClick = true;
     if (deleteButton) deleteButton.hidden = true;
-    moveMediaPhoto(distanceY < 0 ? 1 : -1);
-  }, { passive: true });
+  });
 }
 function photoViewerItems() {
   return mediaItems.filter((item) => item.mediaType === 'photo');
@@ -1101,7 +1090,7 @@ function renderPhotoDetail(item, photoUrl, transition) {
   dialog.classList.remove('media-detail--viewer');
   renderMediaDetail(item, photoUrl, transition);
 }
-async function movePhotoViewer(direction) {
+async function movePhotoViewer(direction, { skipExit = false } = {}) {
   let photos = photoViewerItems();
   let currentIndex = photos.findIndex((item) => item.id === activeMediaDetailId);
   let target = photos[currentIndex + direction];
@@ -1116,7 +1105,7 @@ async function movePhotoViewer(direction) {
     showToast(direction > 0 ? '마지막 사진이에요.' : '첫 사진이에요.');
     return;
   }
-  if (!await animatePhotoTransition(direction, 'horizontal')) return;
+  if (!skipExit && !await animatePhotoTransition(direction, 'horizontal')) return;
   try {
     await openMediaDetail(target, { direction, axis: 'horizontal' });
   } finally {
@@ -1132,25 +1121,63 @@ async function animatePhotoTransition(direction, axis) {
   await new Promise((resolve) => window.setTimeout(resolve, 145));
   return true;
 }
+function bindPhotoDrag(main, axis, onCommit, onRelease = () => {}) {
+  let startX = 0;
+  let startY = 0;
+  let distance = 0;
+  let dragging = false;
+  const reset = () => {
+    main.classList.remove('is-photo-dragging', 'photo-drag-commit');
+    main.style.transform = '';
+  };
+  main.addEventListener('touchstart', (event) => {
+    if (photoTransitionBusy) return;
+    const touch = event.changedTouches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+    distance = 0;
+    dragging = false;
+  }, { passive: true });
+  main.addEventListener('touchmove', (event) => {
+    if (photoTransitionBusy) return;
+    const touch = event.changedTouches[0];
+    const primary = axis === 'horizontal' ? touch.clientX - startX : touch.clientY - startY;
+    const cross = axis === 'horizontal' ? touch.clientY - startY : touch.clientX - startX;
+    if (!dragging && Math.abs(primary) < Math.abs(cross) * 1.2) return;
+    if (Math.abs(primary) < 6) return;
+    dragging = true;
+    event.preventDefault();
+    const limit = (axis === 'horizontal' ? main.clientWidth : main.clientHeight) * 0.42;
+    distance = Math.max(-limit, Math.min(limit, primary * 0.72));
+    main.classList.add('is-photo-dragging');
+    main.style.transform = axis === 'horizontal' ? `translateX(${distance}px)` : `translateY(${distance}px)`;
+  }, { passive: false });
+  const finish = () => {
+    if (!dragging) return;
+    const threshold = Math.min(96, (axis === 'horizontal' ? main.clientWidth : main.clientHeight) * 0.16);
+    const committed = Math.abs(distance) >= threshold;
+    onRelease({ dragged: true, committed });
+    if (!committed) {
+      reset();
+      return;
+    }
+    const direction = distance < 0 ? 1 : -1;
+    photoTransitionBusy = true;
+    main.classList.remove('is-photo-dragging');
+    main.classList.add('photo-drag-commit');
+    const finishDistance = (axis === 'horizontal' ? main.clientWidth : main.clientHeight) * (direction > 0 ? -1.08 : 1.08);
+    main.style.transform = axis === 'horizontal' ? `translateX(${finishDistance}px)` : `translateY(${finishDistance}px)`;
+    window.setTimeout(() => onCommit(direction), 165);
+  };
+  main.addEventListener('touchend', finish, { passive: true });
+  main.addEventListener('touchcancel', () => { if (dragging) { onRelease({ dragged: true, committed: false }); reset(); } }, { passive: true });
+}
 function bindPhotoViewerSwipe() {
   const viewer = byId('photoFullscreenViewer');
   const main = byId('photoFullscreenMain');
   if (!viewer || !main) return;
   viewer.querySelectorAll('[data-photo-viewer-direction]').forEach((button) => button.addEventListener('click', () => movePhotoViewer(Number(button.dataset.photoViewerDirection))));
-  let startX = 0;
-  let startY = 0;
-  main.addEventListener('touchstart', (event) => {
-    const touch = event.changedTouches[0];
-    startX = touch.clientX;
-    startY = touch.clientY;
-  }, { passive: true });
-  main.addEventListener('touchend', (event) => {
-    const touch = event.changedTouches[0];
-    const distanceX = touch.clientX - startX;
-    const distanceY = touch.clientY - startY;
-    if (Math.abs(distanceX) < 54 || Math.abs(distanceX) < Math.abs(distanceY) * 1.3) return;
-    movePhotoViewer(distanceX < 0 ? 1 : -1);
-  }, { passive: true });
+  bindPhotoDrag(main, 'horizontal', (direction) => movePhotoViewer(direction, { skipExit: true }));
 }
 async function openPhotoViewer(item, transition) {
   const requestId = ++photoViewerRequestId;

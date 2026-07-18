@@ -1039,7 +1039,8 @@ async function cacheViewedPhoto(id, photoUrl) {
   try {
     const cache = await caches.open('simji-viewed-photos-v1');
     if (await cache.match(photoCacheKey(id))) return;
-    const response = await fetch(photoUrl);
+    // Avoid reusing an image-only browser cache entry, which cannot always be read by Cache Storage.
+    const response = await fetch(photoUrl, { cache: 'no-store' });
     if (response.ok) await cache.put(photoCacheKey(id), response.clone());
   } catch {
     // Caching is best effort. The signed source URL remains available for this view.

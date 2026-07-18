@@ -908,8 +908,8 @@ function mediaPhotoPeekMarkup(item, direction) {
 function mediaPhotoCarouselMarkup(item, photoUrl) {
   const photos = photoGalleryItems();
   const currentIndex = photos.findIndex((entry) => entry.id === item.id);
-  const previous = currentIndex > 0 ? photos[currentIndex - 1] : null;
-  const next = currentIndex >= 0 ? photos[currentIndex + 1] : null;
+  const previous = currentIndex > 0 ? photos[currentIndex - 1] : (photos.length > 1 ? photos.at(-1) : null);
+  const next = currentIndex >= 0 && currentIndex < photos.length - 1 ? photos[currentIndex + 1] : (photos.length > 1 ? photos[0] : null);
   const deleteControl = item.person === activeMember
     ? '<button class="media-photo-delete" id="mediaPhotoDeleteButton" type="button" hidden aria-label="이 사진 삭제" title="이 사진 삭제">🗑</button>'
     : '';
@@ -942,8 +942,9 @@ async function moveMediaPhoto(direction) {
     currentIndex = photos.findIndex((item) => item.id === activeMediaDetailId);
     target = photos[currentIndex + direction];
   }
+  if (!target && photos.length > 1) target = direction > 0 ? photos[0] : photos.at(-1);
   if (!target) {
-    showToast(direction > 0 ? '마지막 사진이에요.' : '첫 사진이에요.');
+    showToast('보관된 사진이 한 장이에요.');
     return;
   }
   await openMediaDetail(target);

@@ -121,7 +121,7 @@ async function publicRecord(record) {
     ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucketName, Key: record.receiptKey }), { expiresIn: 60 * 30 })
     : undefined;
   const paymentStatus = record.type === 'expense' && ['paid', 'pending'].includes(record.paymentStatus) ? record.paymentStatus : record.type === 'expense' ? 'unconfirmed' : undefined;
-  return { id: record.id, type: record.type, amount: record.amount, date: record.date, memo: record.memo, person: record.person, refundBank: record.refundBank, refundAccount: record.refundAccount, paymentStatus, paymentCompletedAt: record.paymentCompletedAt, paymentCompletedBy: record.paymentCompletedBy, needsReview: record.needsReview, proofUrl };
+  return { id: record.id, type: record.type, amount: record.amount, date: record.date, memo: record.memo, person: record.person, refundBank: record.refundBank, refundAccount: record.refundAccount, paymentStatus, paymentDate: record.paymentDate, paymentCompletedAt: record.paymentCompletedAt, paymentCompletedBy: record.paymentCompletedBy, needsReview: record.needsReview, proofUrl };
 }
 
 async function authenticate(event) {
@@ -298,10 +298,13 @@ async function updatePaymentStatus(event, member) {
   const record = await findExpense(id);
   if (!record) return response(404, { message: '지출 기록을 찾을 수 없습니다.' });
 
-  const status = String(parseBody(event).status || '').trim();
+  const { status: rawStatus, paymentDate: rawPaymentDate } = parseBody(event);
+  const status = String(rawStatus || '').trim();
   if (!['paid', 'pending'].includes(status)) return response(400, { message: '입금 상태를 확인해 주세요.' });
 
   const isPaid = status === 'paid';
+  const paymentDate = isPaid ? String(rawPaymentDate || todayInKorea()) : undefined;
+  if (isPaid && !isValidDate(paymentDate)) return response(400, { message: '입금일을 확인해 주세요.' });
   const updatedAt = new Date().toISOString();
   const updatedRecord = {
     ...record,
@@ -310,9 +313,11 @@ async function updatePaymentStatus(event, member) {
     updatedBy: member,
   };
   if (isPaid) {
+    updatedRecord.paymentDate = paymentDate;
     updatedRecord.paymentCompletedAt = updatedAt;
     updatedRecord.paymentCompletedBy = member;
   } else {
+    delete updatedRecord.paymentDate;
     delete updatedRecord.paymentCompletedAt;
     delete updatedRecord.paymentCompletedBy;
   }
@@ -321,11 +326,11 @@ async function updatePaymentStatus(event, member) {
     TableName: tableName,
     Key: { pk: record.pk, sk: record.sk },
     UpdateExpression: isPaid
-      ? 'SET #paymentStatus = :paymentStatus, paymentCompletedAt = :paymentCompletedAt, paymentCompletedBy = :paymentCompletedBy, updatedAt = :updatedAt, updatedBy = :updatedBy'
-      : 'SET #paymentStatus = :paymentStatus, updatedAt = :updatedAt, updatedBy = :updatedBy REMOVE paymentCompletedAt, paymentCompletedBy',
+      ? 'SET #paymentStatus = :paymentStatus, paymentDate = :paymentDate, paymentCompletedAt = :paymentCompletedAt, paymentCompletedBy = :paymentCompletedBy, updatedAt = :updatedAt, updatedBy = :updatedBy'
+      : 'SET #paymentStatus = :paymentStatus, updatedAt = :updatedAt, updatedBy = :updatedBy REMOVE paymentDate, paymentCompletedAt, paymentCompletedBy',
     ExpressionAttributeNames: { '#paymentStatus': 'paymentStatus' },
     ExpressionAttributeValues: isPaid
-      ? { ':paymentStatus': status, ':paymentCompletedAt': updatedAt, ':paymentCompletedBy': member, ':updatedAt': updatedAt, ':updatedBy': member }
+      ? { ':paymentStatus': status, ':paymentDate': paymentDate, ':paymentCompletedAt': updatedAt, ':paymentCompletedBy': member, ':updatedAt': updatedAt, ':updatedBy': member }
       : { ':paymentStatus': status, ':updatedAt': updatedAt, ':updatedBy': member },
     ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
   }));

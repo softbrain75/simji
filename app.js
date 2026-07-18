@@ -57,7 +57,12 @@ function showToast(message) {
   toast.classList.add('show');
   toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
 }
-function setToday() { byId('expenseDate').value = new Date().toISOString().slice(0, 10); }
+function todayInKorea() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const part = (type) => parts.find((item) => item.type === type).value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+function setToday() { byId('expenseDate').value = todayInKorea(); }
 
 async function api(path, { method = 'GET', body, authenticated = true } = {}) {
   const headers = { 'Content-Type': 'application/json' };
@@ -98,7 +103,7 @@ function paymentState(record) {
 function paymentStatusText(record) {
   const state = paymentState(record);
   if (state === 'paid') {
-    const completedDate = String(record.paymentCompletedAt || '').slice(0, 10);
+    const completedDate = record.paymentDate || String(record.paymentCompletedAt || '').slice(0, 10);
     return completedDate ? `입금 완료 · ${formatDate(completedDate)}` : '입금 완료';
   }
   return state === 'pending' ? '입금 대기' : '입금 확인 필요';
@@ -108,12 +113,13 @@ function paymentActionMarkup(record) {
   const state = paymentState(record);
   const nextStatus = state === 'paid' ? 'pending' : 'paid';
   const label = state === 'paid' ? '입금 완료 취소' : '입금 완료';
-  return `<button class="payment-action payment-detail-action${state === 'paid' ? ' is-reset' : ''}" id="detailPaymentButton" type="button" data-payment-status="${nextStatus}">${label}</button>`;
+  const dateField = state === 'paid' ? '' : `<label class="payment-date payment-date--detail">입금일<input id="detailPaymentDate" type="date" value="${todayInKorea()}" required /></label>`;
+  return `${dateField}<button class="payment-action payment-detail-action${state === 'paid' ? ' is-reset' : ''}" id="detailPaymentButton" type="button" data-payment-status="${nextStatus}">${label}</button>`;
 }
 function bindDetailPaymentButton(record) {
   const button = byId('detailPaymentButton');
   if (!button) return;
-  button.addEventListener('click', () => savePaymentStatus(record, button.dataset.paymentStatus, button));
+  button.addEventListener('click', () => savePaymentStatus(record, button.dataset.paymentStatus, button, byId('detailPaymentDate')?.value));
 }
 function placeExpenseButtonInline(hasPayableExpenses) {
   const button = byId('openExpense');
@@ -145,7 +151,7 @@ function renderPaymentPanel(records) {
   byId('paymentList').innerHTML = payable.length ? payable.map((record) => {
     const hasAccount = Boolean(record.refundBank && record.refundAccount);
     const account = hasAccount ? `${record.refundBank} ${record.refundAccount}` : '환불 계좌를 등록해 주세요.';
-    return `<article class="payment-card"><div class="payment-card__head"><div><p class="payment-card__person">${escapeHtml(record.person || record.member || '지출자 확인 필요')}</p><span class="payment-card__memo">${escapeHtml(record.memo || '영수증 지출')}</span></div><strong class="payment-card__amount">${formatMoney(record.amount)}</strong></div><p class="payment-card__account${hasAccount ? '' : ' is-missing'}">${escapeHtml(account)}</p><div class="payment-card__footer"><span class="payment-card__state">${paymentStatusText(record)}</span><button class="payment-action" type="button" data-payment-id="${escapeHtml(record.id)}" data-payment-status="paid">입금 완료</button></div></article>`;
+    return `<article class="payment-card"><div class="payment-card__head"><div><p class="payment-card__person">${escapeHtml(record.person || record.member || '지출자 확인 필요')}</p><span class="payment-card__memo">${escapeHtml(record.memo || '영수증 지출')}</span></div><strong class="payment-card__amount">${formatMoney(record.amount)}</strong></div><p class="payment-card__account${hasAccount ? '' : ' is-missing'}">${escapeHtml(account)}</p><div class="payment-card__footer"><label class="payment-date">입금일<input type="date" value="${todayInKorea()}" data-payment-date required /></label><button class="payment-action" type="button" data-payment-id="${escapeHtml(record.id)}" data-payment-status="paid">입금 완료</button></div></article>`;
   }).join('') : '<p class="payment-empty">모든 환불 송금이 완료되었어요.</p>';
 }
 
@@ -289,12 +295,13 @@ async function saveExpenseEdit(event, record) {
   }
 }
 
-async function savePaymentStatus(record, status, button) {
+async function savePaymentStatus(record, status, button, paymentDate = todayInKorea()) {
   if (activeMember !== treasurerMember) { showToast('통장 담당자만 입금 상태를 처리할 수 있어요.'); return; }
   const isPaid = status === 'paid';
+  if (isPaid && !/^\d{4}-\d{2}-\d{2}$/.test(paymentDate || '')) { showToast('입금일을 선택해 주세요.'); return; }
   const account = record.refundBank && record.refundAccount ? `${record.refundBank} ${record.refundAccount}` : '등록된 계좌 없음';
   const confirmation = isPaid
-    ? `${record.person || record.member} · ${formatMoney(record.amount)}\n${account}\n입금을 완료했나요?`
+    ? `${record.person || record.member} · ${formatMoney(record.amount)}\n${account}\n입금일 ${formatDate(paymentDate)}로 완료 처리할까요?`
     : `${record.person || record.member} 지출의 입금 완료 표시를 취소할까요?`;
   if (!window.confirm(confirmation)) return;
 
@@ -302,7 +309,7 @@ async function savePaymentStatus(record, status, button) {
   button.textContent = isPaid ? '처리 중…' : '취소 중…';
   try {
     if (cloudMode) {
-      await api(`/expenses/${encodeURIComponent(record.id)}/payment`, { method: 'PATCH', body: { status } });
+      await api(`/expenses/${encodeURIComponent(record.id)}/payment`, { method: 'PATCH', body: { status, paymentDate: isPaid ? paymentDate : undefined } });
     } else {
       const paymentCompletedAt = isPaid ? new Date().toISOString() : undefined;
       const records = getLocalRecords().map((item) => (item.id === record.id ? {
@@ -310,6 +317,7 @@ async function savePaymentStatus(record, status, button) {
         paymentStatus: status,
         paymentCompletedAt,
         paymentCompletedBy: isPaid ? treasurerMember : undefined,
+        paymentDate: isPaid ? paymentDate : undefined,
       } : item));
       saveLocalRecords(records);
     }
@@ -480,7 +488,8 @@ byId('paymentList').addEventListener('click', (event) => {
   const button = event.target.closest('[data-payment-id]');
   if (!button) return;
   const record = recordsCache.find((item) => item.id === button.dataset.paymentId);
-  if (record) savePaymentStatus(record, button.dataset.paymentStatus, button);
+  const paymentDate = button.closest('.payment-card')?.querySelector('[data-payment-date]')?.value;
+  if (record) savePaymentStatus(record, button.dataset.paymentStatus, button, paymentDate);
 });
 byId('memberButton').addEventListener('click', () => {
   if (window.confirm('다른 멤버로 이 기기를 사용할까요?')) signOut();

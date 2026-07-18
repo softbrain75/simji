@@ -1020,14 +1020,22 @@ async function openMediaDetail(item) {
 }
 async function deleteMediaItem(item, button) {
   if (!window.confirm(item.mediaType === 'photo' ? '이 사진을 삭제할까요? 삭제 후에는 되돌릴 수 없어요.' : '이 유튜브 링크를 삭제할까요?')) return;
+  const currentIndex = mediaGalleryItems().findIndex((entry) => entry.id === item.id);
   const iconButton = button.classList.contains('media-photo-delete');
   button.disabled = true;
   button.textContent = iconButton ? '…' : '삭제 중…';
   try {
     await api(`/media/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
     mediaItems = mediaItems.filter((entry) => entry.id !== item.id);
-    closeMediaDetail();
     renderMedia();
+    let nextItem = mediaGalleryItems()[currentIndex] || mediaGalleryItems()[currentIndex - 1];
+    if (!nextItem && mediaHasMore) {
+      await loadMedia();
+      const loadedItems = mediaGalleryItems();
+      nextItem = loadedItems[currentIndex] || loadedItems[currentIndex - 1] || loadedItems[0];
+    }
+    if (nextItem) await openMediaDetail(nextItem);
+    else closeMediaDetail();
     showToast('사진·영상을 삭제했어요.');
   } catch (error) {
     showToast(error.message || '삭제하지 못했어요.');

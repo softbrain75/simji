@@ -28,6 +28,7 @@ let mediaSelectionVersion = 0;
 let activeMediaDetailId = '';
 let photoViewerRequestId = 0;
 let photoViewerObjectUrl = '';
+const landscapeMediaQuery = window.matchMedia('(orientation: landscape)');
 let mediaObserver;
 let serviceWorkerRegistration;
 let serviceWorkerReloading = false;
@@ -539,6 +540,7 @@ function closeMedia() {
   applyPendingAppUpdate();
 }
 function resetPhotoViewer() {
+  document.body.classList.remove('landscape-photo-viewer');
   byId('mediaDetailBackdrop').classList.remove('media-detail-backdrop--viewer');
   byId('mediaDetailContent').closest('.media-detail').classList.remove('media-detail--photo', 'media-detail--viewer');
   if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
@@ -1049,11 +1051,24 @@ async function cacheViewedPhoto(id, photoUrl) {
 function renderPhotoViewer(item, photoUrl) {
   const backdrop = byId('mediaDetailBackdrop');
   const dialog = byId('mediaDetailContent').closest('.media-detail');
+  document.body.classList.add('landscape-photo-viewer');
   backdrop.classList.add('media-detail-backdrop--viewer');
   dialog.classList.remove('media-detail--photo');
   dialog.classList.add('media-detail--viewer');
   byId('mediaDetailContent').innerHTML = `<div class="photo-fullscreen-viewer" id="photoFullscreenViewer"><img src="${escapeHtml(photoUrl)}" alt="사진" /></div>`;
   bindPhotoViewerSwipe();
+}
+function renderPhotoDetail(item, photoUrl) {
+  if (landscapeMediaQuery.matches) {
+    renderPhotoViewer(item, photoUrl);
+    return;
+  }
+  const backdrop = byId('mediaDetailBackdrop');
+  const dialog = byId('mediaDetailContent').closest('.media-detail');
+  document.body.classList.remove('landscape-photo-viewer');
+  backdrop.classList.remove('media-detail-backdrop--viewer');
+  dialog.classList.remove('media-detail--viewer');
+  renderMediaDetail(item, photoUrl);
 }
 async function movePhotoViewer(direction) {
   let photos = photoViewerItems();
@@ -1094,20 +1109,22 @@ async function openPhotoViewer(item) {
   if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
   photoViewerObjectUrl = '';
   const dialog = byId('mediaDetailContent').closest('.media-detail');
-  byId('mediaDetailBackdrop').classList.add('media-detail-backdrop--viewer');
-  dialog.classList.remove('media-detail--photo');
-  dialog.classList.add('media-detail--viewer');
+  const fullscreen = landscapeMediaQuery.matches;
+  document.body.classList.toggle('landscape-photo-viewer', fullscreen);
+  byId('mediaDetailBackdrop').classList.toggle('media-detail-backdrop--viewer', fullscreen);
+  dialog.classList.toggle('media-detail--photo', !fullscreen);
+  dialog.classList.toggle('media-detail--viewer', fullscreen);
   byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오는 중이에요…</p>';
   const cachedUrl = await cachedPhotoViewerUrl(item.id);
   if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
   if (cachedUrl) {
-    renderPhotoViewer(item, cachedUrl);
+    renderPhotoDetail(item, cachedUrl);
     return;
   }
   try {
     const result = await api(`/media/${encodeURIComponent(item.id)}`);
     if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
-    renderPhotoViewer(item, result.item.photoUrl);
+    renderPhotoDetail(item, result.item.photoUrl);
     cacheViewedPhoto(item.id, result.item.photoUrl);
   } catch (error) {
     byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오지 못했어요.</p>';
@@ -1217,6 +1234,17 @@ byId('mediaDateRail').addEventListener('click', (event) => {
   if (!button) return;
   byId(`media-date-${button.dataset.mediaTarget}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+let photoOrientationTimer;
+function refreshOpenPhotoForOrientation() {
+  window.clearTimeout(photoOrientationTimer);
+  photoOrientationTimer = window.setTimeout(() => {
+    if (byId('mediaDetailBackdrop').hidden) return;
+    const item = mediaItems.find((entry) => entry.id === activeMediaDetailId);
+    if (item?.mediaType === 'photo') openMediaDetail(item);
+  }, 160);
+}
+landscapeMediaQuery.addEventListener?.('change', refreshOpenPhotoForOrientation);
+window.addEventListener('orientationchange', refreshOpenPhotoForOrientation);
 window.addEventListener('scroll', updateActiveMediaDate, { passive: true });
 if ('IntersectionObserver' in window) {
   mediaObserver = new IntersectionObserver((entries) => {

@@ -713,9 +713,9 @@ async function deleteExpense(record, button) {
 function formatMediaDate(value) {
   return new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(`${value}T00:00:00`));
 }
-function formatMediaDateShort(value) {
-  const date = new Date(`${value}T00:00:00`);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+function formatMediaMonth(value) {
+  const [year, month] = String(value).split('-');
+  return `${String(year || '').slice(-2)}.${month}`;
 }
 function mediaCardMarkup(item) {
   const isVideo = item.mediaType === 'video';
@@ -730,9 +730,14 @@ function renderMedia() {
     if (!last || last.date !== item.date) groups.push({ date: item.date, items: [item] });
     else last.items.push(item);
   });
+  const months = groups.reduce((result, group) => {
+    const month = group.date.slice(0, 7);
+    if (!result.some((entry) => entry.month === month)) result.push({ month, target: group.date });
+    return result;
+  }, []);
   byId('mediaCount').textContent = `${visibleItems.length}개`;
   byId('mediaFeed').innerHTML = groups.map((group) => `<section class="media-day" id="media-date-${group.date}" data-media-date="${group.date}"><div class="media-day__bookmark"><span>${formatMediaDate(group.date)}</span><i></i></div><div class="media-grid">${group.items.map(mediaCardMarkup).join('')}</div></section>`).join('');
-  byId('mediaDateRail').innerHTML = groups.map((group, index) => `<button type="button" class="media-date-jump${index === 0 ? ' is-active' : ''}" data-media-target="${group.date}">${formatMediaDateShort(group.date)}</button>`).join('');
+  byId('mediaDateRail').innerHTML = months.map((entry, index) => `<button type="button" class="media-date-jump${index === 0 ? ' is-active' : ''}" data-media-target="${entry.target}" data-media-month="${entry.month}">${formatMediaMonth(entry.month)}</button>`).join('');
   byId('mediaEmpty').hidden = visibleItems.length > 0 || mediaLoading;
   byId('mediaLoading').hidden = !mediaLoading;
   byId('mediaSentinel').hidden = !mediaHasMore;
@@ -743,7 +748,8 @@ function updateActiveMediaDate() {
   const sections = Array.from(document.querySelectorAll('.media-day'));
   if (!sections.length) return;
   const current = sections.reduce((selected, section) => (section.getBoundingClientRect().top <= 160 ? section : selected), sections[0]);
-  document.querySelectorAll('.media-date-jump').forEach((button) => button.classList.toggle('is-active', button.dataset.mediaTarget === current.dataset.mediaDate));
+  const currentMonth = current.dataset.mediaDate.slice(0, 7);
+  document.querySelectorAll('.media-date-jump').forEach((button) => button.classList.toggle('is-active', button.dataset.mediaMonth === currentMonth));
 }
 async function loadMedia({ reset = false } = {}) {
   if (!cloudMode) return;

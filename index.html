@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
     <link rel="stylesheet" href="styles.css?v=11" />
     <link rel="stylesheet" href="detail-edit.css?v=10" />
-    <link rel="stylesheet" href="media.css?v=3" />
+    <link rel="stylesheet" href="media.css?v=4" />
   </head>
   <body>
     <section class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
@@ -185,26 +185,24 @@
           <div class="media-photo-info" id="mediaPhotoInfo" hidden></div>
           <p class="scan-note">사진에 담긴 촬영 날짜와 위치 정보를 자동으로 읽습니다. 위치가 있으면 지역명으로 표시되고, 사진은 멤버만 볼 수 있는 비공개 보관함에 저장됩니다.</p>
           <label class="field field--last">등록자<input id="mediaPhotoPerson" value="" readonly /></label>
-          <label class="field field--last">메모 <span>(선택)</span><input name="caption" maxlength="80" placeholder="예: 여름 정기모임" /></label>
           <button class="save-expense" id="saveMediaPhoto" type="submit">사진 보관하기 <span>→</span></button>
         </form>
         <form id="mediaVideoForm" hidden>
           <label class="field">유튜브 링크<input name="url" type="url" inputmode="url" autocomplete="off" placeholder="YouTube 영상 또는 Shorts 링크" required /></label>
           <p class="scan-note">영상 파일은 저장하지 않고, 유튜브 미리보기와 링크만 보관해요.</p>
           <div class="two-fields"><label class="field">날짜<input id="mediaVideoDate" name="date" type="date" required /></label><label class="field">등록자<input id="mediaVideoPerson" value="" readonly /></label></div>
-          <label class="field field--last">메모 <span>(선택)</span><input name="caption" maxlength="80" placeholder="예: 그날의 공연 영상" /></label>
           <button class="save-expense" id="saveMediaVideo" type="submit">영상 링크 보관하기 <span>→</span></button>
         </form>
       </section>
     </div>
     <div class="modal-backdrop media-detail-backdrop" id="mediaDetailBackdrop" hidden>
-      <section class="media-detail" role="dialog" aria-modal="true" aria-labelledby="mediaDetailTitle">
+      <section class="media-detail" role="dialog" aria-modal="true" aria-label="사진·영상 보기">
         <button class="media-detail-close" id="closeMediaDetail" type="button" aria-label="닫기">×</button>
         <div id="mediaDetailContent"></div>
       </section>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=19"></script>
+    <script src="app.js?v=20"></script>
   </body>
 </html>

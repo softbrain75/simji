@@ -1,11 +1,11 @@
-const CACHE_NAME = 'simji-pwa-v20';
+const CACHE_NAME = 'simji-pwa-v21';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/styles.css?v=11',
   '/detail-edit.css?v=10',
-  '/media.css?v=4',
-  '/app.js?v=20',
+  '/media.css?v=5',
+  '/app.js?v=21',
   '/config.js',
   '/manifest.webmanifest?v=3',
   '/icons/simji-heart.svg?v=1',

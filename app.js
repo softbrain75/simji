@@ -525,8 +525,6 @@ function closeDetail() {
 function openMedia() {
   if (!cloudMode) { showToast('사진·영상 보관함은 AWS 연결 후 사용할 수 있어요.'); return; }
   byId('mediaVideoDate').value = todayInKorea();
-  byId('mediaPhotoPerson').value = activeMember;
-  byId('mediaVideoPerson').value = activeMember;
   byId('mediaBackdrop').hidden = false;
 }
 function closeMedia() {
@@ -535,6 +533,7 @@ function closeMedia() {
 }
 function closeMediaDetail() {
   byId('mediaDetailBackdrop').hidden = true;
+  byId('mediaDetailContent').closest('.media-detail').classList.remove('media-detail--photo');
   activeMediaDetailId = '';
   applyPendingAppUpdate();
 }
@@ -716,7 +715,7 @@ function formatMediaDateShort(value) {
 function mediaCardMarkup(item) {
   const isVideo = item.mediaType === 'video';
   const location = item.locationName ? `<span class="media-card__location">⌖ ${escapeHtml(item.locationName)}</span>` : '';
-  return `<button class="media-card media-card--${escapeHtml(item.mediaType)}" type="button" data-media-id="${escapeHtml(item.id)}"><span class="media-card__image"><img loading="lazy" src="${escapeHtml(item.thumbnailUrl)}" alt="${isVideo ? '유튜브 영상' : '사진'}" />${isVideo ? '<span class="media-card__youtube">YouTube</span><span class="media-card__play">▶</span>' : ''}</span>${location}<span class="media-card__person">${escapeHtml(item.person || '')}</span></button>`;
+  return `<button class="media-card media-card--${escapeHtml(item.mediaType)}" type="button" data-media-id="${escapeHtml(item.id)}"><span class="media-card__image"><img loading="lazy" src="${escapeHtml(item.thumbnailUrl)}" alt="${isVideo ? '유튜브 영상' : '사진'}" />${isVideo ? '<span class="media-card__youtube">YouTube</span><span class="media-card__play">▶</span>' : ''}</span>${location}</button>`;
 }
 function renderMedia() {
   const visibleItems = mediaItems.filter((item) => activeMediaFilter === 'all' || item.mediaType === activeMediaFilter);
@@ -789,7 +788,8 @@ function renderMediaPhotoInfo() {
     return;
   }
   info.hidden = false;
-  info.innerHTML = mediaPhotoMetadata.map((metadata, index) => {
+  const shownMetadata = mediaPhotoMetadata.slice(0, 16);
+  const details = shownMetadata.map((metadata, index) => {
     const dateLabel = formatCapturedAt(metadata.capturedAt, metadata.date);
     const placeLabel = Number.isFinite(metadata.latitude) && Number.isFinite(metadata.longitude)
       ? '위치 정보 확인됨 · 보관할 때 지역명으로 표시'
@@ -797,20 +797,28 @@ function renderMediaPhotoInfo() {
     const fallback = metadata.source === 'file' ? '사진 날짜 정보가 없어 파일 날짜를 사용합니다' : '';
     return `<p><b>${escapeHtml(selectedMediaFiles[index]?.name || `사진 ${index + 1}`)}</b><span>${escapeHtml(dateLabel)} · ${placeLabel}${fallback ? ` · ${fallback}` : ''}</span></p>`;
   }).join('');
+  const more = selectedMediaFiles.length > shownMetadata.length ? `<p><span>나머지 ${selectedMediaFiles.length - shownMetadata.length}장도 함께 저장됩니다.</span></p>` : '';
+  info.innerHTML = details + more;
 }
 async function setSelectedMediaFiles(files) {
   const allFiles = Array.from(files || []).filter(isLikelyImage);
   clearMediaPhotoSelection();
   const selectionVersion = mediaSelectionVersion;
-  if (allFiles.length > 10) showToast('사진은 한 번에 최대 10장까지 선택할 수 있어요.');
-  selectedMediaFiles = allFiles.slice(0, 10);
+  selectedMediaFiles = allFiles;
   if (!selectedMediaFiles.length) return;
-  mediaPreviewUrls = selectedMediaFiles.map((file) => URL.createObjectURL(file));
-  byId('mediaPhotoPreview').innerHTML = mediaPreviewUrls.map((url, index) => `<img src="${url}" alt="선택한 사진 ${index + 1}" />`).join('');
+  const previewFiles = selectedMediaFiles.slice(0, 12);
+  mediaPreviewUrls = previewFiles.map((file) => URL.createObjectURL(file));
+  const previews = mediaPreviewUrls.map((url, index) => `<img src="${url}" alt="선택한 사진 ${index + 1}" />`).join('');
+  const more = selectedMediaFiles.length > previewFiles.length ? `<span class="media-photo-preview__more">+${selectedMediaFiles.length - previewFiles.length}</span>` : '';
+  byId('mediaPhotoPreview').innerHTML = previews + more;
   byId('mediaPhotoPreview').hidden = false;
   mediaPhotoMetadataLoading = true;
   renderMediaPhotoInfo();
-  const metadata = await Promise.all(selectedMediaFiles.map(photoMetadataFromFile));
+  const metadata = [];
+  for (const file of selectedMediaFiles) {
+    metadata.push(await photoMetadataFromFile(file));
+    if (selectionVersion !== mediaSelectionVersion) return;
+  }
   if (selectionVersion !== mediaSelectionVersion) return;
   mediaPhotoMetadata = metadata;
   mediaPhotoMetadataLoading = false;
@@ -885,25 +893,44 @@ async function saveMediaVideo(event) {
   }
 }
 function mediaEditorMarkup(item) {
-  if (item.person !== activeMember) return '';
-  const videoEditor = item.mediaType === 'video' ? `<form class="media-editor" id="mediaEditForm"><label>날짜<input name="date" type="date" value="${escapeHtml(item.date)}" required /></label><button type="submit">수정 저장</button></form>` : '';
-  return `${videoEditor}<button class="media-delete" id="mediaDeleteButton" type="button">${item.mediaType === 'photo' ? '이 사진 삭제' : '이 영상 링크 삭제'}</button>`;
-}
-function renderMediaDetail(item, photoUrl = '') {
-  const isVideo = item.mediaType === 'video';
-  const visual = isVideo
-    ? `<a class="media-detail-video" href="${escapeHtml(item.youtubeUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(item.thumbnailUrl)}" alt="유튜브 영상" /><span>▶</span><b>유튜브에서 보기</b></a>`
-    : `<img class="media-detail-image" src="${escapeHtml(photoUrl)}" alt="사진" />`;
-  const location = !isVideo && item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
-  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content">${visual}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}<p>등록 · ${escapeHtml(item.person || '')}</p></div>${mediaEditorMarkup(item)}</div>`;
-  const editForm = byId('mediaEditForm');
-  if (editForm) editForm.addEventListener('submit', (event) => saveMediaEdit(event, item));
-  const deleteButton = byId('mediaDeleteButton');
-  if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(item, deleteButton));
-  if (!isVideo) bindMediaPhotoSwipe();
+  if (item.person !== activeMember || item.mediaType === 'photo') return '';
+  return `<form class="media-editor" id="mediaEditForm"><label>날짜<input name="date" type="date" value="${escapeHtml(item.date)}" required /></label><button type="submit">수정 저장</button></form><button class="media-delete" id="mediaDeleteButton" type="button">이 영상 링크 삭제</button>`;
 }
 function photoGalleryItems() {
   return mediaItems.filter((item) => item.mediaType === 'photo');
+}
+function mediaPhotoPeekMarkup(item, direction) {
+  const position = direction < 0 ? 'previous' : 'next';
+  if (!item) return `<div class="media-photo-peek media-photo-peek--${position} is-empty" aria-hidden="true"></div>`;
+  const label = direction < 0 ? '이전 사진 보기' : '다음 사진 보기';
+  return `<button class="media-photo-peek media-photo-peek--${position}" type="button" data-media-direction="${direction}" aria-label="${label}"><img src="${escapeHtml(item.thumbnailUrl)}" alt="" /></button>`;
+}
+function mediaPhotoCarouselMarkup(item, photoUrl) {
+  const photos = photoGalleryItems();
+  const currentIndex = photos.findIndex((entry) => entry.id === item.id);
+  const previous = currentIndex > 0 ? photos[currentIndex - 1] : null;
+  const next = currentIndex >= 0 ? photos[currentIndex + 1] : null;
+  const deleteControl = item.person === activeMember
+    ? '<button class="media-photo-delete" id="mediaPhotoDeleteButton" type="button" hidden aria-label="이 사진 삭제" title="이 사진 삭제">🗑</button>'
+    : '';
+  return `<div class="media-photo-carousel" id="mediaPhotoCarousel">${mediaPhotoPeekMarkup(previous, -1)}<div class="media-photo-main" id="mediaPhotoMain" role="button" tabindex="0" aria-label="사진을 누르면 삭제 메뉴 표시" aria-expanded="false"><img class="media-detail-image" src="${escapeHtml(photoUrl)}" alt="사진" /></div>${mediaPhotoPeekMarkup(next, 1)}${deleteControl}</div>`;
+}
+function renderMediaDetail(item, photoUrl = '') {
+  const isVideo = item.mediaType === 'video';
+  const dialog = byId('mediaDetailContent').closest('.media-detail');
+  dialog.classList.toggle('media-detail--photo', !isVideo);
+  if (isVideo) {
+    const visual = `<a class="media-detail-video" href="${escapeHtml(item.youtubeUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(item.thumbnailUrl)}" alt="유튜브 영상" /><span>▶</span><b>유튜브에서 보기</b></a>`;
+    byId('mediaDetailContent').innerHTML = `<div class="media-detail-content">${visual}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p></div>${mediaEditorMarkup(item)}</div>`;
+    const editForm = byId('mediaEditForm');
+    if (editForm) editForm.addEventListener('submit', (event) => saveMediaEdit(event, item));
+    const deleteButton = byId('mediaDeleteButton');
+    if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(item, deleteButton));
+    return;
+  }
+  const location = item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
+  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content media-detail-content--photo">${mediaPhotoCarouselMarkup(item, photoUrl)}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}</div></div>`;
+  bindMediaPhotoCarousel(item);
 }
 async function moveMediaPhoto(direction) {
   let photos = photoGalleryItems();
@@ -921,22 +948,43 @@ async function moveMediaPhoto(direction) {
   }
   await openMediaDetail(target);
 }
-function bindMediaPhotoSwipe() {
-  const image = byId('mediaDetailContent').querySelector('.media-detail-image');
-  if (!image) return;
+function bindMediaPhotoCarousel(item) {
+  const carousel = byId('mediaPhotoCarousel');
+  const main = byId('mediaPhotoMain');
+  const deleteButton = byId('mediaPhotoDeleteButton');
+  if (!carousel || !main) return;
+  carousel.querySelectorAll('[data-media-direction]').forEach((button) => button.addEventListener('click', () => moveMediaPhoto(Number(button.dataset.mediaDirection))));
+  if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(item, deleteButton));
+  const toggleDeleteControl = () => {
+    if (!deleteButton) return;
+    deleteButton.hidden = !deleteButton.hidden;
+    main.setAttribute('aria-expanded', String(!deleteButton.hidden));
+  };
   let startX = 0;
   let startY = 0;
-  image.addEventListener('touchstart', (event) => {
+  let ignoreNextClick = false;
+  main.addEventListener('click', () => {
+    if (ignoreNextClick) { ignoreNextClick = false; return; }
+    toggleDeleteControl();
+  });
+  main.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggleDeleteControl();
+  });
+  main.addEventListener('touchstart', (event) => {
     const touch = event.changedTouches[0];
     startX = touch.clientX;
     startY = touch.clientY;
   }, { passive: true });
-  image.addEventListener('touchend', (event) => {
+  main.addEventListener('touchend', (event) => {
     const touch = event.changedTouches[0];
     const distanceX = touch.clientX - startX;
     const distanceY = touch.clientY - startY;
-    if (Math.abs(distanceX) < 54 || Math.abs(distanceX) < Math.abs(distanceY) * 1.35) return;
-    moveMediaPhoto(distanceX < 0 ? 1 : -1);
+    if (Math.abs(distanceY) < 54 || Math.abs(distanceY) < Math.abs(distanceX) * 1.3) return;
+    ignoreNextClick = true;
+    if (deleteButton) deleteButton.hidden = true;
+    moveMediaPhoto(distanceY < 0 ? 1 : -1);
   }, { passive: true });
 }
 async function openMediaDetail(item) {
@@ -978,8 +1026,9 @@ async function saveMediaEdit(event, item) {
 }
 async function deleteMediaItem(item, button) {
   if (!window.confirm(item.mediaType === 'photo' ? '이 사진을 삭제할까요? 삭제 후에는 되돌릴 수 없어요.' : '이 유튜브 링크를 삭제할까요?')) return;
+  const iconButton = button.classList.contains('media-photo-delete');
   button.disabled = true;
-  button.textContent = '삭제 중…';
+  button.textContent = iconButton ? '…' : '삭제 중…';
   try {
     await api(`/media/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
     mediaItems = mediaItems.filter((entry) => entry.id !== item.id);
@@ -990,6 +1039,7 @@ async function deleteMediaItem(item, button) {
     showToast(error.message || '삭제하지 못했어요.');
   } finally {
     button.disabled = false;
+    if (iconButton) button.textContent = '🗑';
   }
 }
 

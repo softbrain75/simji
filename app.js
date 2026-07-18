@@ -27,7 +27,8 @@ let mediaPhotoMetadataLoading = false;
 let mediaSelectionVersion = 0;
 let activeMediaDetailId = '';
 let photoViewerRequestId = 0;
-let photoViewerObjectUrl = '';
+const photoObjectUrls = new Map();
+const photoSourceUrls = new Map();
 let photoTransitionBusy = false;
 const landscapeMediaQuery = window.matchMedia('(orientation: landscape)');
 const themeColorMeta = document.querySelector('meta[name="theme-color"]');
@@ -546,8 +547,9 @@ function resetPhotoViewer() {
   setPhotoViewerMode('none');
   byId('mediaDetailBackdrop').classList.remove('media-detail-backdrop--viewer');
   byId('mediaDetailContent').closest('.media-detail').classList.remove('media-detail--photo', 'media-detail--viewer');
-  if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
-  photoViewerObjectUrl = '';
+  photoObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+  photoObjectUrls.clear();
+  photoSourceUrls.clear();
   photoViewerRequestId += 1;
 }
 function setPhotoViewerMode(mode) {
@@ -1032,6 +1034,7 @@ function photoCacheKey(id) {
   return new Request(`${location.origin}/__simji_viewed_photo__/${encodeURIComponent(id)}`);
 }
 async function cachedPhotoViewerUrl(id) {
+  if (photoObjectUrls.has(id)) return photoObjectUrls.get(id);
   if (!('caches' in window)) return '';
   try {
     const cache = await caches.open('simji-viewed-photos-v1');
@@ -1039,12 +1042,23 @@ async function cachedPhotoViewerUrl(id) {
     if (!response) return '';
     const blob = await response.blob();
     if (!blob.size) return '';
-    if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
-    photoViewerObjectUrl = URL.createObjectURL(blob);
-    return photoViewerObjectUrl;
+    const objectUrl = URL.createObjectURL(blob);
+    photoObjectUrls.set(id, objectUrl);
+    photoSourceUrls.set(id, objectUrl);
+    return objectUrl;
   } catch {
     return '';
   }
+}
+async function resolvePhotoSource(item) {
+  if (photoSourceUrls.has(item.id)) return photoSourceUrls.get(item.id);
+  const cachedUrl = await cachedPhotoViewerUrl(item.id);
+  if (cachedUrl) return cachedUrl;
+  const result = await api(`/media/${encodeURIComponent(item.id)}`);
+  const sourceUrl = result.item.photoUrl;
+  photoSourceUrls.set(item.id, sourceUrl);
+  cacheViewedPhoto(item.id, sourceUrl);
+  return sourceUrl;
 }
 async function cacheViewedPhoto(id, photoUrl) {
   if (!('caches' in window) || !photoUrl) return;
@@ -1058,37 +1072,219 @@ async function cacheViewedPhoto(id, photoUrl) {
     // Caching is best effort. The signed source URL remains available for this view.
   }
 }
-function photoFullscreenPeekMarkup(item, direction) {
-  const position = direction < 0 ? 'previous' : 'next';
-  if (!item) return `<div class="photo-fullscreen-peek photo-fullscreen-peek--${position} is-empty" aria-hidden="true"></div>`;
-  const label = direction < 0 ? '이전 사진 보기' : '다음 사진 보기';
-  return `<button class="photo-fullscreen-peek photo-fullscreen-peek--${position}" type="button" data-photo-viewer-direction="${direction}" aria-label="${label}"><img src="${escapeHtml(item.thumbnailUrl)}" alt="" /></button>`;
-}
-function renderPhotoViewer(item, photoUrl, transition) {
-  const backdrop = byId('mediaDetailBackdrop');
-  const dialog = byId('mediaDetailContent').closest('.media-detail');
+function photoNeighbor(item, direction) {
   const photos = photoViewerItems();
+  if (photos.length < 2) return item;
   const currentIndex = photos.findIndex((entry) => entry.id === item.id);
-  const previous = currentIndex > 0 ? photos[currentIndex - 1] : (photos.length > 1 ? photos.at(-1) : null);
-  const next = currentIndex >= 0 && currentIndex < photos.length - 1 ? photos[currentIndex + 1] : (photos.length > 1 ? photos[0] : null);
-  setPhotoViewerMode('landscape');
-  backdrop.classList.add('media-detail-backdrop--viewer');
-  dialog.classList.remove('media-detail--photo');
-  dialog.classList.add('media-detail--viewer');
-  byId('mediaDetailContent').innerHTML = `<div class="photo-fullscreen-viewer${mediaTransitionEnterClass(transition)}" id="photoFullscreenViewer">${photoFullscreenPeekMarkup(previous, -1)}<div class="photo-fullscreen-main" id="photoFullscreenMain"><img src="${escapeHtml(photoUrl)}" alt="사진" /></div>${photoFullscreenPeekMarkup(next, 1)}</div>`;
-  bindPhotoViewerSwipe();
+  if (currentIndex < 0) return item;
+  return photos[(currentIndex + direction + photos.length) % photos.length];
 }
-function renderPhotoDetail(item, photoUrl, transition) {
-  if (landscapeMediaQuery.matches) {
-    renderPhotoViewer(item, photoUrl, transition);
-    return;
+function realPhotoSlideMarkup(item, position) {
+  const source = photoSourceUrls.get(item.id) || item.thumbnailUrl;
+  return `<button class="real-photo-slide real-photo-slide--${position}" type="button" data-photo-id="${escapeHtml(item.id)}" data-photo-position="${position}"${position === 'current' ? '' : ' tabindex="-1" aria-hidden="true"'}><img src="${escapeHtml(source)}" alt="${position === 'current' ? '사진' : ''}" /></button>`;
+}
+function updateRealPhotoMetadata(state) {
+  const item = state.slots[1];
+  activeMediaDetailId = item.id;
+  const metadata = byId('realPhotoMeta');
+  if (metadata) {
+    const location = item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
+    metadata.innerHTML = `<p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}`;
   }
-  const backdrop = byId('mediaDetailBackdrop');
+  const deleteButton = byId('realPhotoDelete');
+  if (deleteButton) {
+    deleteButton.hidden = true;
+    deleteButton.disabled = item.person !== activeMember;
+    deleteButton.setAttribute('aria-label', '이 사진 삭제');
+  }
+}
+function fillRealPhotoSlide(slide, item, position) {
+  const source = photoSourceUrls.get(item.id) || item.thumbnailUrl;
+  slide.className = `real-photo-slide real-photo-slide--${position}`;
+  slide.dataset.photoId = item.id;
+  slide.dataset.photoPosition = position;
+  slide.tabIndex = position === 'current' ? 0 : -1;
+  slide.setAttribute('aria-hidden', String(position !== 'current'));
+  const image = slide.querySelector('img');
+  image.src = source;
+  image.alt = position === 'current' ? '사진' : '';
+}
+function setupRealPhotoCarousel(item, photoUrl, axis) {
+  const reel = byId('realPhotoReel');
+  const track = byId('realPhotoTrack');
+  if (!reel || !track) return;
+  if (mediaHasMore) void loadMedia();
+  photoSourceUrls.set(item.id, photoUrl);
+  const state = {
+    axis,
+    reel,
+    track,
+    slots: [photoNeighbor(item, -1), item, photoNeighbor(item, 1)],
+    settling: false,
+    dragging: false,
+    ignoreClick: false,
+    startX: 0,
+    startY: 0,
+    delta: 0,
+    size: 0,
+    cardSize: 0,
+    initialOffset: 0,
+  };
+  const getDimension = () => {
+    const style = window.getComputedStyle(reel);
+    const padding = axis === 'horizontal'
+      ? parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
+      : parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    return Math.max(1, (axis === 'horizontal' ? reel.clientWidth : reel.clientHeight) - padding);
+  };
+  const setTransform = (offset, animate = false) => {
+    track.style.transition = animate ? 'transform 320ms cubic-bezier(.22,.8,.25,1)' : 'none';
+    track.style.transform = axis === 'horizontal' ? `translate3d(${offset}px,0,0)` : `translate3d(0,${offset}px,0)`;
+  };
+  const layout = () => {
+    const style = window.getComputedStyle(reel);
+    state.size = getDimension();
+    const peek = axis === 'horizontal'
+      ? Math.min(136, Math.max(52, state.size * 0.15))
+      : Math.min(70, Math.max(48, state.size * 0.1));
+    state.cardSize = Math.max(1, state.size - (peek * 2));
+    state.initialOffset = -(state.cardSize - peek);
+    const crossPadding = axis === 'horizontal'
+      ? parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+      : parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const crossSize = Math.max(1, (axis === 'horizontal' ? reel.clientHeight : reel.clientWidth) - crossPadding);
+    Array.from(track.children).forEach((slide) => {
+      if (axis === 'horizontal') {
+        slide.style.width = `${state.cardSize}px`;
+        slide.style.height = `${crossSize}px`;
+      } else {
+        slide.style.width = `${crossSize}px`;
+        slide.style.height = `${state.cardSize}px`;
+      }
+    });
+    if (axis === 'horizontal') {
+      track.style.width = `${state.cardSize * 3}px`;
+      track.style.height = `${crossSize}px`;
+    } else {
+      track.style.width = `${crossSize}px`;
+      track.style.height = `${state.cardSize * 3}px`;
+    }
+    setTransform(state.initialOffset);
+  };
+  const prime = (target) => {
+    resolvePhotoSource(target).then((source) => {
+      Array.from(track.children).forEach((slide) => {
+        if (slide.dataset.photoId !== target.id) return;
+        const image = slide.querySelector('img');
+        if (image) image.src = source;
+      });
+    }).catch(() => {});
+  };
+  const refreshSlots = () => {
+    Array.from(track.children).forEach((slide, index) => fillRealPhotoSlide(slide, state.slots[index], index === 0 ? 'previous' : index === 1 ? 'current' : 'next'));
+    updateRealPhotoMetadata(state);
+    prime(state.slots[0]);
+    prime(state.slots[2]);
+  };
+  const finishShift = (direction) => {
+    if (direction > 0) {
+      state.slots = [state.slots[1], state.slots[2], photoNeighbor(state.slots[2], 1)];
+      track.append(track.firstElementChild);
+    } else {
+      state.slots = [photoNeighbor(state.slots[0], -1), state.slots[0], state.slots[1]];
+      track.prepend(track.lastElementChild);
+    }
+    refreshSlots();
+    state.settling = false;
+    setTransform(state.initialOffset);
+    window.requestAnimationFrame(() => { track.style.transition = ''; });
+  };
+  const navigate = (direction) => {
+    if (state.settling || state.slots[0].id === state.slots[1].id) return;
+    state.settling = true;
+    const targetOffset = state.initialOffset - (direction * state.cardSize);
+    setTransform(targetOffset, true);
+    let complete = false;
+    const finish = () => {
+      if (complete) return;
+      complete = true;
+      track.removeEventListener('transitionend', onTransitionEnd);
+      finishShift(direction);
+    };
+    const onTransitionEnd = (event) => {
+      if (event.target === track && event.propertyName === 'transform') finish();
+    };
+    track.addEventListener('transitionend', onTransitionEnd);
+    window.setTimeout(finish, 380);
+  };
+  const snapBack = () => setTransform(state.initialOffset, true);
+  track.innerHTML = `${realPhotoSlideMarkup(state.slots[0], 'previous')}${realPhotoSlideMarkup(state.slots[1], 'current')}${realPhotoSlideMarkup(state.slots[2], 'next')}`;
+  layout();
+  updateRealPhotoMetadata(state);
+  prime(state.slots[0]);
+  prime(state.slots[2]);
+  const deleteButton = byId('realPhotoDelete');
+  if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(state.slots[1], deleteButton));
+  reel.addEventListener('click', (event) => {
+    if (state.ignoreClick) return;
+    const slide = event.target.closest('.real-photo-slide');
+    if (!slide) return;
+    const position = slide.dataset.photoPosition;
+    if (position === 'previous') navigate(-1);
+    else if (position === 'next') navigate(1);
+    else if (deleteButton && state.slots[1].person === activeMember) deleteButton.hidden = !deleteButton.hidden;
+  });
+  reel.addEventListener('touchstart', (event) => {
+    if (state.settling) return;
+    const touch = event.changedTouches[0];
+    state.startX = touch.clientX;
+    state.startY = touch.clientY;
+    state.delta = 0;
+    state.dragging = false;
+  }, { passive: true });
+  reel.addEventListener('touchmove', (event) => {
+    if (state.settling) return;
+    const touch = event.changedTouches[0];
+    const primary = axis === 'horizontal' ? touch.clientX - state.startX : touch.clientY - state.startY;
+    const cross = axis === 'horizontal' ? touch.clientY - state.startY : touch.clientX - state.startX;
+    if (!state.dragging && Math.abs(primary) < Math.abs(cross) * 1.15) return;
+    if (Math.abs(primary) < 5) return;
+    state.dragging = true;
+    state.delta = Math.max(-state.cardSize * 0.68, Math.min(state.cardSize * 0.68, primary * 0.82));
+    reel.classList.add('is-real-photo-dragging');
+    setTransform(state.initialOffset + state.delta);
+    event.preventDefault();
+  }, { passive: false });
+  const finishDrag = () => {
+    if (!state.dragging) return;
+    state.dragging = false;
+    reel.classList.remove('is-real-photo-dragging');
+    state.ignoreClick = true;
+    window.setTimeout(() => { state.ignoreClick = false; }, 220);
+    const threshold = Math.min(96, state.cardSize * 0.17);
+    if (Math.abs(state.delta) < threshold) snapBack();
+    else navigate(state.delta < 0 ? 1 : -1);
+  };
+  reel.addEventListener('touchend', finishDrag, { passive: true });
+  reel.addEventListener('touchcancel', finishDrag, { passive: true });
+}
+function renderRealPhotoCarousel(item, photoUrl, axis) {
+  const isLandscape = axis === 'horizontal';
   const dialog = byId('mediaDetailContent').closest('.media-detail');
-  setPhotoViewerMode('portrait');
-  backdrop.classList.remove('media-detail-backdrop--viewer');
-  dialog.classList.remove('media-detail--viewer');
-  renderMediaDetail(item, photoUrl, transition);
+  const backdrop = byId('mediaDetailBackdrop');
+  setPhotoViewerMode(isLandscape ? 'landscape' : 'portrait');
+  backdrop.classList.toggle('media-detail-backdrop--viewer', isLandscape);
+  dialog.classList.toggle('media-detail--viewer', isLandscape);
+  dialog.classList.toggle('media-detail--photo', !isLandscape);
+  const portraitDetails = isLandscape ? '' : `<button class="media-photo-delete" id="realPhotoDelete" type="button" hidden aria-label="이 사진 삭제" title="이 사진 삭제">🗑</button><div class="media-detail-copy" id="realPhotoMeta"></div>`;
+  byId('mediaDetailContent').innerHTML = `<div class="real-photo-detail real-photo-detail--${axis}"><div class="real-photo-reel real-photo-reel--${axis}" id="realPhotoReel"><div class="real-photo-track" id="realPhotoTrack"></div></div>${portraitDetails}</div>`;
+  setupRealPhotoCarousel(item, photoUrl, axis);
+}
+function renderPhotoViewer(item, photoUrl) {
+  renderRealPhotoCarousel(item, photoUrl, 'horizontal');
+}
+function renderPhotoDetail(item, photoUrl) {
+  renderRealPhotoCarousel(item, photoUrl, landscapeMediaQuery.matches ? 'horizontal' : 'vertical');
 }
 async function movePhotoViewer(direction, { skipExit = false } = {}) {
   let photos = photoViewerItems();
@@ -1181,8 +1377,6 @@ function bindPhotoViewerSwipe() {
 }
 async function openPhotoViewer(item, transition) {
   const requestId = ++photoViewerRequestId;
-  if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
-  photoViewerObjectUrl = '';
   const dialog = byId('mediaDetailContent').closest('.media-detail');
   const fullscreen = landscapeMediaQuery.matches;
   setPhotoViewerMode(fullscreen ? 'landscape' : 'portrait');
@@ -1190,17 +1384,10 @@ async function openPhotoViewer(item, transition) {
   dialog.classList.toggle('media-detail--photo', !fullscreen);
   dialog.classList.toggle('media-detail--viewer', fullscreen);
   byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오는 중이에요…</p>';
-  const cachedUrl = await cachedPhotoViewerUrl(item.id);
-  if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
-  if (cachedUrl) {
-    renderPhotoDetail(item, cachedUrl, transition);
-    return;
-  }
   try {
-    const result = await api(`/media/${encodeURIComponent(item.id)}`);
+    const photoUrl = await resolvePhotoSource(item);
     if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
-    renderPhotoDetail(item, result.item.photoUrl, transition);
-    cacheViewedPhoto(item.id, result.item.photoUrl);
+    renderPhotoDetail(item, photoUrl, transition);
   } catch (error) {
     byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오지 못했어요.</p>';
     showToast(error.message || '사진을 불러오지 못했어요.');

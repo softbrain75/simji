@@ -14,6 +14,15 @@ let activeFilter = 'all';
 let activeMember = '';
 let recordsCache = [];
 let toastTimer;
+let activeView = 'ledger';
+let activeMediaFilter = 'all';
+let mediaItems = [];
+let mediaNextCursor = '';
+let mediaHasMore = true;
+let mediaLoading = false;
+let selectedMediaFiles = [];
+let mediaPreviewUrls = [];
+let mediaObserver;
 let serviceWorkerRegistration;
 let serviceWorkerReloading = false;
 let pendingAppUpdate = false;
@@ -139,6 +148,21 @@ function updateCreateButton() {
   byId('openExpense').innerHTML = activeFilter === 'income'
     ? '<span>↓</span> 입금 기록 입력'
     : '<span>＋</span> 영수증으로 지출 등록';
+  byId('openExpense').hidden = activeView !== 'ledger';
+}
+
+function setActiveView(view) {
+  activeView = view;
+  const isMedia = view === 'media';
+  byId('ledgerView').hidden = isMedia;
+  byId('mediaView').hidden = !isMedia;
+  byId('openMedia').hidden = !isMedia;
+  document.querySelectorAll('.main-tab').forEach((button) => button.classList.toggle('is-active', button.dataset.view === view));
+  updateCreateButton();
+  if (isMedia) {
+    renderMedia();
+    if (!mediaItems.length && !mediaLoading) loadMedia({ reset: true });
+  }
 }
 
 function paymentState(record) {
@@ -244,6 +268,22 @@ function closeDetail() {
   byId('detailBackdrop').hidden = true;
   applyPendingAppUpdate();
 }
+function openMedia() {
+  if (!cloudMode) { showToast('사진·영상 보관함은 AWS 연결 후 사용할 수 있어요.'); return; }
+  byId('mediaPhotoDate').value = todayInKorea();
+  byId('mediaVideoDate').value = todayInKorea();
+  byId('mediaPhotoPerson').value = activeMember;
+  byId('mediaVideoPerson').value = activeMember;
+  byId('mediaBackdrop').hidden = false;
+}
+function closeMedia() {
+  byId('mediaBackdrop').hidden = true;
+  applyPendingAppUpdate();
+}
+function closeMediaDetail() {
+  byId('mediaDetailBackdrop').hidden = true;
+  applyPendingAppUpdate();
+}
 function closeAllModals() {
   document.querySelectorAll('.modal-backdrop').forEach((backdrop) => { backdrop.hidden = true; });
   applyPendingAppUpdate();
@@ -261,20 +301,19 @@ function clearIncomeImage() {
   byId('incomePreviewImage').src = '';
 }
 
-function compressImage(file) {
+function compressImage(file, maxSize = 1280, quality = 0.76) {
   return new Promise((resolve, reject) => {
     const source = new Image();
     const reader = new FileReader();
     reader.onload = () => { source.src = reader.result; };
     reader.onerror = reject;
     source.onload = () => {
-      const maxSize = 1280;
       const scale = Math.min(1, maxSize / Math.max(source.width, source.height));
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(source.width * scale);
       canvas.height = Math.round(source.height * scale);
       canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.76));
+      resolve(canvas.toDataURL('image/jpeg', quality));
     };
     source.onerror = reject;
     reader.readAsDataURL(file);
@@ -413,6 +452,215 @@ async function deleteExpense(record, button) {
   }
 }
 
+function formatMediaDate(value) {
+  return new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(`${value}T00:00:00`));
+}
+function formatMediaDateShort(value) {
+  const date = new Date(`${value}T00:00:00`);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+function mediaCardMarkup(item) {
+  const isVideo = item.mediaType === 'video';
+  const description = item.caption || (isVideo ? '유튜브 영상' : '심지회 사진');
+  return `<button class="media-card media-card--${escapeHtml(item.mediaType)}" type="button" data-media-id="${escapeHtml(item.id)}"><span class="media-card__image"><img loading="lazy" src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(description)}" />${isVideo ? '<span class="media-card__youtube">YouTube</span><span class="media-card__play">▶</span>' : ''}</span><span class="media-card__caption">${escapeHtml(description)}</span><span class="media-card__person">${escapeHtml(item.person || '')}</span></button>`;
+}
+function renderMedia() {
+  const visibleItems = mediaItems.filter((item) => activeMediaFilter === 'all' || item.mediaType === activeMediaFilter);
+  const groups = [];
+  visibleItems.forEach((item) => {
+    const last = groups[groups.length - 1];
+    if (!last || last.date !== item.date) groups.push({ date: item.date, items: [item] });
+    else last.items.push(item);
+  });
+  byId('mediaCount').textContent = `${visibleItems.length}개`;
+  byId('mediaFeed').innerHTML = groups.map((group) => `<section class="media-day" id="media-date-${group.date}" data-media-date="${group.date}"><div class="media-day__bookmark"><span>${formatMediaDate(group.date)}</span><i></i></div><div class="media-grid">${group.items.map(mediaCardMarkup).join('')}</div></section>`).join('');
+  byId('mediaDateRail').innerHTML = groups.map((group, index) => `<button type="button" class="media-date-jump${index === 0 ? ' is-active' : ''}" data-media-target="${group.date}">${formatMediaDateShort(group.date)}</button>`).join('');
+  byId('mediaEmpty').hidden = visibleItems.length > 0 || mediaLoading;
+  byId('mediaLoading').hidden = !mediaLoading;
+  byId('mediaSentinel').hidden = !mediaHasMore;
+  updateActiveMediaDate();
+}
+function updateActiveMediaDate() {
+  if (activeView !== 'media') return;
+  const sections = Array.from(document.querySelectorAll('.media-day'));
+  if (!sections.length) return;
+  const current = sections.reduce((selected, section) => (section.getBoundingClientRect().top <= 160 ? section : selected), sections[0]);
+  document.querySelectorAll('.media-date-jump').forEach((button) => button.classList.toggle('is-active', button.dataset.mediaTarget === current.dataset.mediaDate));
+}
+async function loadMedia({ reset = false } = {}) {
+  if (!cloudMode) return;
+  if (mediaLoading || (!reset && !mediaHasMore)) return;
+  if (reset) {
+    mediaItems = [];
+    mediaNextCursor = '';
+    mediaHasMore = true;
+  }
+  mediaLoading = true;
+  renderMedia();
+  try {
+    const cursor = mediaNextCursor ? `&cursor=${encodeURIComponent(mediaNextCursor)}` : '';
+    const result = await api(`/media?limit=18${cursor}`);
+    const incoming = result.items || [];
+    const known = new Set(mediaItems.map((item) => item.id));
+    mediaItems = [...mediaItems, ...incoming.filter((item) => !known.has(item.id))]
+      .sort((first, second) => `${second.date}${second.createdAt || ''}`.localeCompare(`${first.date}${first.createdAt || ''}`));
+    mediaNextCursor = result.nextCursor || '';
+    mediaHasMore = Boolean(mediaNextCursor);
+  } catch (error) {
+    showToast(error.message || '사진·영상을 불러오지 못했어요.');
+  } finally {
+    mediaLoading = false;
+    renderMedia();
+  }
+}
+function clearMediaPhotoSelection() {
+  mediaPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  mediaPreviewUrls = [];
+  selectedMediaFiles = [];
+  byId('mediaPhotoInput').value = '';
+  byId('mediaPhotoPreview').hidden = true;
+  byId('mediaPhotoPreview').innerHTML = '';
+}
+function setSelectedMediaFiles(files) {
+  clearMediaPhotoSelection();
+  const allFiles = Array.from(files || []).filter((file) => file.type.startsWith('image/'));
+  if (allFiles.length > 10) showToast('사진은 한 번에 최대 10장까지 선택할 수 있어요.');
+  selectedMediaFiles = allFiles.slice(0, 10);
+  if (!selectedMediaFiles.length) return;
+  mediaPreviewUrls = selectedMediaFiles.map((file) => URL.createObjectURL(file));
+  byId('mediaPhotoPreview').innerHTML = mediaPreviewUrls.map((url, index) => `<img src="${url}" alt="선택한 사진 ${index + 1}" />`).join('');
+  byId('mediaPhotoPreview').hidden = false;
+}
+function setMediaForm(type) {
+  const isPhoto = type === 'photo';
+  byId('mediaPhotoForm').hidden = !isPhoto;
+  byId('mediaVideoForm').hidden = isPhoto;
+  document.querySelectorAll('.media-form-tab').forEach((button) => button.classList.toggle('is-active', button.dataset.mediaForm === type));
+}
+async function saveMediaPhotos(event) {
+  event.preventDefault();
+  if (!selectedMediaFiles.length) { showToast('보관할 사진을 선택해 주세요.'); return; }
+  const photoCount = selectedMediaFiles.length;
+  const form = new FormData(event.currentTarget);
+  const date = String(form.get('date') || '');
+  const caption = String(form.get('caption') || '').trim();
+  if (!date) { showToast('사진 날짜를 선택해 주세요.'); return; }
+  const button = byId('saveMediaPhoto');
+  button.disabled = true;
+  try {
+    for (let index = 0; index < photoCount; index += 1) {
+      button.textContent = `사진 ${index + 1}/${photoCount} 저장 중…`;
+      const image = await compressImage(selectedMediaFiles[index], 1280, 0.76);
+      const thumbnail = await compressImage(selectedMediaFiles[index], 480, 0.7);
+      await api('/media/photos', {
+        method: 'POST',
+        body: { imageBase64: image.split(',')[1], thumbnailBase64: thumbnail.split(',')[1], date, caption },
+      });
+    }
+    event.currentTarget.reset();
+    clearMediaPhotoSelection();
+    closeMedia();
+    await loadMedia({ reset: true });
+    showToast(`${photoCount}장의 사진을 보관했어요.`);
+  } catch (error) {
+    showToast(error.message || '사진을 저장하지 못했어요. 다시 시도해 주세요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '사진 보관하기 <span>→</span>';
+  }
+}
+async function saveMediaVideo(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const url = String(form.get('url') || '').trim();
+  const date = String(form.get('date') || '');
+  if (!url || !date) { showToast('유튜브 링크와 날짜를 확인해 주세요.'); return; }
+  const button = byId('saveMediaVideo');
+  button.disabled = true;
+  button.textContent = '영상 링크 저장 중…';
+  try {
+    await api('/media/videos', { method: 'POST', body: { url, date, caption: String(form.get('caption') || '').trim() } });
+    event.currentTarget.reset();
+    closeMedia();
+    await loadMedia({ reset: true });
+    showToast('유튜브 영상을 보관했어요.');
+  } catch (error) {
+    showToast(error.message || '유튜브 링크를 저장하지 못했어요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '영상 링크 보관하기 <span>→</span>';
+  }
+}
+function mediaEditorMarkup(item) {
+  if (item.person !== activeMember) return '';
+  return `<form class="media-editor" id="mediaEditForm"><label>날짜<input name="date" type="date" value="${escapeHtml(item.date)}" required /></label><label>메모<input name="caption" maxlength="80" value="${escapeHtml(item.caption || '')}" placeholder="사진 또는 영상 메모" /></label><button type="submit">수정 저장</button></form><button class="media-delete" id="mediaDeleteButton" type="button">${item.mediaType === 'photo' ? '이 사진 삭제' : '이 영상 링크 삭제'}</button>`;
+}
+function renderMediaDetail(item, photoUrl = '') {
+  const isVideo = item.mediaType === 'video';
+  const description = item.caption || (isVideo ? '유튜브 영상' : '심지회 사진');
+  const visual = isVideo
+    ? `<a class="media-detail-video" href="${escapeHtml(item.youtubeUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(item.thumbnailUrl)}" alt="${escapeHtml(description)}" /><span>▶</span><b>유튜브에서 보기</b></a>`
+    : `<img class="media-detail-image" src="${escapeHtml(photoUrl)}" alt="${escapeHtml(description)}" />`;
+  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content">${visual}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p><h2 id="mediaDetailTitle">${escapeHtml(description)}</h2><p>등록 · ${escapeHtml(item.person || '')}</p></div>${mediaEditorMarkup(item)}</div>`;
+  const editForm = byId('mediaEditForm');
+  if (editForm) editForm.addEventListener('submit', (event) => saveMediaEdit(event, item));
+  const deleteButton = byId('mediaDeleteButton');
+  if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(item, deleteButton));
+}
+async function openMediaDetail(item) {
+  byId('mediaDetailBackdrop').hidden = false;
+  if (item.mediaType === 'video') {
+    renderMediaDetail(item);
+    return;
+  }
+  byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오는 중이에요…</p>';
+  try {
+    const result = await api(`/media/${encodeURIComponent(item.id)}`);
+    renderMediaDetail({ ...item, ...result.item }, result.item.photoUrl);
+  } catch (error) {
+    byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오지 못했어요.</p>';
+    showToast(error.message || '사진을 불러오지 못했어요.');
+  }
+}
+async function saveMediaEdit(event, item) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const date = String(form.get('date') || '');
+  const caption = String(form.get('caption') || '').trim();
+  const button = event.currentTarget.querySelector('button');
+  button.disabled = true;
+  button.textContent = '저장 중…';
+  try {
+    const result = await api(`/media/${encodeURIComponent(item.id)}`, { method: 'PATCH', body: { date, caption } });
+    mediaItems = mediaItems.map((entry) => (entry.id === item.id ? { ...entry, ...result.item } : entry))
+      .sort((first, second) => `${second.date}${second.createdAt || ''}`.localeCompare(`${first.date}${first.createdAt || ''}`));
+    closeMediaDetail();
+    renderMedia();
+    showToast('사진·영상 정보를 수정했어요.');
+  } catch (error) {
+    showToast(error.message || '수정 내용을 저장하지 못했어요.');
+  } finally {
+    button.disabled = false;
+    button.textContent = '수정 저장';
+  }
+}
+async function deleteMediaItem(item, button) {
+  if (!window.confirm(item.mediaType === 'photo' ? '이 사진을 삭제할까요? 삭제 후에는 되돌릴 수 없어요.' : '이 유튜브 링크를 삭제할까요?')) return;
+  button.disabled = true;
+  button.textContent = '삭제 중…';
+  try {
+    await api(`/media/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+    mediaItems = mediaItems.filter((entry) => entry.id !== item.id);
+    closeMediaDetail();
+    renderMedia();
+    showToast('사진·영상을 삭제했어요.');
+  } catch (error) {
+    showToast(error.message || '삭제하지 못했어요.');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function enterApp(member, sessionToken = '') {
   activeMember = member;
   localStorage.setItem(memberStorageKey, member);
@@ -438,6 +686,9 @@ byId('openExpense').addEventListener('click', openExpense);
 byId('closeExpense').addEventListener('click', closeExpense);
 byId('closeIncome').addEventListener('click', closeIncome);
 byId('closeDetail').addEventListener('click', closeDetail);
+byId('openMedia').addEventListener('click', openMedia);
+byId('closeMedia').addEventListener('click', closeMedia);
+byId('closeMediaDetail').addEventListener('click', closeMediaDetail);
 byId('refreshApp').addEventListener('click', async () => {
   const button = byId('refreshApp');
   button.classList.add('is-refreshing');
@@ -450,6 +701,35 @@ byId('refreshApp').addEventListener('click', async () => {
 });
 document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeAllModals(); }));
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAllModals(); });
+document.querySelectorAll('.main-tab').forEach((button) => button.addEventListener('click', () => setActiveView(button.dataset.view)));
+document.querySelectorAll('.media-filter').forEach((button) => button.addEventListener('click', () => {
+  document.querySelector('.media-filter.is-active')?.classList.remove('is-active');
+  button.classList.add('is-active');
+  activeMediaFilter = button.dataset.mediaFilter;
+  renderMedia();
+}));
+document.querySelectorAll('.media-form-tab').forEach((button) => button.addEventListener('click', () => setMediaForm(button.dataset.mediaForm)));
+byId('mediaPhotoInput').addEventListener('change', (event) => setSelectedMediaFiles(event.target.files));
+byId('mediaPhotoForm').addEventListener('submit', saveMediaPhotos);
+byId('mediaVideoForm').addEventListener('submit', saveMediaVideo);
+byId('mediaFeed').addEventListener('click', (event) => {
+  const card = event.target.closest('[data-media-id]');
+  if (!card) return;
+  const item = mediaItems.find((entry) => entry.id === card.dataset.mediaId);
+  if (item) openMediaDetail(item);
+});
+byId('mediaDateRail').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-media-target]');
+  if (!button) return;
+  byId(`media-date-${button.dataset.mediaTarget}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+window.addEventListener('scroll', updateActiveMediaDate, { passive: true });
+if ('IntersectionObserver' in window) {
+  mediaObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting) && activeView === 'media') loadMedia();
+  }, { rootMargin: '500px 0px' });
+  mediaObserver.observe(byId('mediaSentinel'));
+}
 
 byId('receiptInput').addEventListener('change', (event) => {
   const [file] = event.target.files;

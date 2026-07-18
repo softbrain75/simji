@@ -109,6 +109,42 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /records
             Method: GET
+        ListMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /media
+            Method: GET
+        GetMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /media/{id}
+            Method: GET
+        SavePhoto:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /media/photos
+            Method: POST
+        SaveVideo:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /media/videos
+            Method: POST
+        UpdateMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /media/{id}
+            Method: PATCH
+        DeleteMedia:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /media/{id}
+            Method: DELETE
         ScanExpense:
           Type: HttpApi
           Properties:

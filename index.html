@@ -13,8 +13,9 @@
     <link rel="apple-touch-icon" href="icons/simji-icon.svg" />
     <title>심지회 · 모임 통장</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
-    <link rel="stylesheet" href="styles.css?v=10" />
+    <link rel="stylesheet" href="styles.css?v=11" />
     <link rel="stylesheet" href="detail-edit.css?v=10" />
+    <link rel="stylesheet" href="media.css?v=1" />
   </head>
   <body>
     <section class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
@@ -53,28 +54,54 @@
         </div>
       </section>
 
-      <section class="payment-panel" id="paymentPanel" aria-labelledby="paymentTitle" hidden>
-        <div class="payment-panel__header"><div><p>TRANSFER LIST</p><h2 id="paymentTitle">송금할 지출</h2></div><span id="paymentCount">0건</span></div>
-        <p class="payment-panel__summary" id="paymentSummary">송금할 지출을 확인해 주세요.</p>
-        <div class="payment-list" id="paymentList" aria-live="polite"></div>
-      </section>
+      <nav class="main-tabs" aria-label="심지회 콘텐츠">
+        <button class="main-tab is-active" type="button" data-view="ledger">거래내역</button>
+        <button class="main-tab" type="button" data-view="media">사진·영상</button>
+      </nav>
 
-      <section class="ledger-section">
-        <div class="section-title"><div><h2>거래내역</h2></div><span id="recordCount">0건</span></div>
-        <nav class="filters" aria-label="기록 필터">
-          <button class="filter is-active" data-filter="all">전체</button>
-          <button class="filter" data-filter="income">입금</button>
-          <button class="filter" data-filter="expense">지출</button>
+      <div id="ledgerView">
+        <section class="payment-panel" id="paymentPanel" aria-labelledby="paymentTitle" hidden>
+          <div class="payment-panel__header"><div><p>TRANSFER LIST</p><h2 id="paymentTitle">송금할 지출</h2></div><span id="paymentCount">0건</span></div>
+          <p class="payment-panel__summary" id="paymentSummary">송금할 지출을 확인해 주세요.</p>
+          <div class="payment-list" id="paymentList" aria-live="polite"></div>
+        </section>
+
+        <section class="ledger-section">
+          <div class="section-title"><div><h2>거래내역</h2></div><span id="recordCount">0건</span></div>
+          <nav class="filters" aria-label="기록 필터">
+            <button class="filter is-active" data-filter="all">전체</button>
+            <button class="filter" data-filter="income">입금</button>
+            <button class="filter" data-filter="expense">지출</button>
+          </nav>
+          <div class="ledger" id="ledger" aria-live="polite"></div>
+          <div class="empty" id="emptyState">
+            <span class="empty__mark">＋</span>
+            <h3>아직 기록이 없어요</h3>
+            <p>영수증 사진 한 장으로<br />첫 지출을 남겨보세요.</p>
+          </div>
+        </section>
+      </div>
+
+      <section class="media-section" id="mediaView" hidden aria-labelledby="mediaTitle">
+        <div class="section-title media-title"><div><p>SIMJI MOMENTS</p><h2 id="mediaTitle">사진·영상</h2></div><span id="mediaCount">0개</span></div>
+        <nav class="filters media-filters" aria-label="사진 영상 필터">
+          <button class="media-filter is-active" type="button" data-media-filter="all">전체</button>
+          <button class="media-filter" type="button" data-media-filter="photo">사진</button>
+          <button class="media-filter" type="button" data-media-filter="video">영상</button>
         </nav>
-        <div class="ledger" id="ledger" aria-live="polite"></div>
-        <div class="empty" id="emptyState">
-          <span class="empty__mark">＋</span>
-          <h3>아직 기록이 없어요</h3>
-          <p>영수증 사진 한 장으로<br />첫 지출을 남겨보세요.</p>
+        <div class="media-feed-wrap">
+          <div class="media-feed" id="mediaFeed" aria-live="polite"></div>
+          <nav class="media-date-rail" id="mediaDateRail" aria-label="날짜 바로가기"></nav>
+        </div>
+        <p class="media-loading" id="mediaLoading" hidden>추억을 더 불러오는 중이에요…</p>
+        <div class="media-sentinel" id="mediaSentinel" aria-hidden="true"></div>
+        <div class="media-empty" id="mediaEmpty" hidden>
+          <span>✦</span><h3>첫 사진을 남겨보세요</h3><p>모임의 순간과 유튜브 영상을<br />날짜별로 모아볼 수 있어요.</p>
         </div>
       </section>
 
       <button class="add-expense" id="openExpense"><span>＋</span> 영수증으로 지출 등록</button>
+      <button class="add-media" id="openMedia" type="button" hidden><span>＋</span> 사진·영상 추가</button>
     </main>
 
     <div class="modal-backdrop" id="expenseBackdrop" hidden>
@@ -143,8 +170,40 @@
         <div id="detailContent"></div>
       </section>
     </div>
+    <div class="modal-backdrop" id="mediaBackdrop" hidden>
+      <section class="sheet media-sheet" role="dialog" aria-modal="true" aria-labelledby="mediaSheetTitle">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header"><div><p>SIMJI MOMENTS</p><h2 id="mediaSheetTitle">사진·영상 추가</h2></div><button class="close" id="closeMedia" aria-label="닫기">×</button></div>
+        <nav class="media-form-tabs" aria-label="미디어 종류">
+          <button class="media-form-tab is-active" type="button" data-media-form="photo">사진</button>
+          <button class="media-form-tab" type="button" data-media-form="video">유튜브 영상</button>
+        </nav>
+        <form id="mediaPhotoForm">
+          <input id="mediaPhotoInput" type="file" accept="image/*" multiple hidden />
+          <label class="receipt-picker media-picker" for="mediaPhotoInput"><span class="receipt-picker__camera">✦</span><span><b>사진 선택</b><small>앨범 또는 카메라에서 최대 10장</small></span><span class="receipt-picker__arrow">›</span></label>
+          <div class="media-photo-preview" id="mediaPhotoPreview" hidden></div>
+          <p class="scan-note">사진은 멤버만 볼 수 있는 비공개 보관함에 저장됩니다.</p>
+          <div class="two-fields"><label class="field">날짜<input id="mediaPhotoDate" name="date" type="date" required /></label><label class="field">등록자<input id="mediaPhotoPerson" value="" readonly /></label></div>
+          <label class="field field--last">메모 <span>(선택)</span><input name="caption" maxlength="80" placeholder="예: 여름 정기모임" /></label>
+          <button class="save-expense" id="saveMediaPhoto" type="submit">사진 보관하기 <span>→</span></button>
+        </form>
+        <form id="mediaVideoForm" hidden>
+          <label class="field">유튜브 링크<input name="url" type="url" inputmode="url" autocomplete="off" placeholder="YouTube 영상 또는 Shorts 링크" required /></label>
+          <p class="scan-note">영상 파일은 저장하지 않고, 유튜브 미리보기와 링크만 보관해요.</p>
+          <div class="two-fields"><label class="field">날짜<input id="mediaVideoDate" name="date" type="date" required /></label><label class="field">등록자<input id="mediaVideoPerson" value="" readonly /></label></div>
+          <label class="field field--last">메모 <span>(선택)</span><input name="caption" maxlength="80" placeholder="예: 그날의 공연 영상" /></label>
+          <button class="save-expense" id="saveMediaVideo" type="submit">영상 링크 보관하기 <span>→</span></button>
+        </form>
+      </section>
+    </div>
+    <div class="modal-backdrop media-detail-backdrop" id="mediaDetailBackdrop" hidden>
+      <section class="media-detail" role="dialog" aria-modal="true" aria-labelledby="mediaDetailTitle">
+        <button class="media-detail-close" id="closeMediaDetail" type="button" aria-label="닫기">×</button>
+        <div id="mediaDetailContent"></div>
+      </section>
+    </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=10"></script>
+    <script src="app.js?v=11"></script>
   </body>
 </html>

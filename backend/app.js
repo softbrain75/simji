@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand, DeleteCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
@@ -140,6 +140,211 @@ async function listRecords() {
     Limit: 150,
   }));
   return Promise.all((result.Items || []).map(publicRecord));
+}
+
+function encodeCursor(key) {
+  return key ? Buffer.from(JSON.stringify(key)).toString('base64url') : undefined;
+}
+
+function decodeCursor(cursor) {
+  if (!cursor) return undefined;
+  try {
+    const key = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    if (key?.pk === 'SIMJI_MEDIA' && typeof key.sk === 'string') return key;
+  } catch {
+    // An invalid cursor is handled as the first page.
+  }
+  return undefined;
+}
+
+function normalizeCaption(value) {
+  return String(value || '').trim().slice(0, 80);
+}
+
+function extractYouTubeId(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    let id = '';
+    if (host === 'youtu.be') id = url.pathname.split('/').filter(Boolean)[0] || '';
+    if (['youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(host)) {
+      if (url.pathname === '/watch') id = url.searchParams.get('v') || '';
+      else id = url.pathname.split('/').filter(Boolean)[1] || '';
+    }
+    return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : '';
+  } catch {
+    return '';
+  }
+}
+
+function decodeImage(value, maxBytes) {
+  const source = String(value || '');
+  if (!source || !/^[A-Za-z0-9+/=]+$/.test(source)) return null;
+  const image = Buffer.from(source, 'base64');
+  return image.length && image.length <= maxBytes ? image : null;
+}
+
+async function publicMediaItem(record, { includeOriginal = false } = {}) {
+  const thumbnailUrl = record.mediaType === 'photo'
+    ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucketName, Key: record.thumbnailKey }), { expiresIn: 60 * 30 })
+    : `https://i.ytimg.com/vi/${record.youtubeId}/hqdefault.jpg`;
+  const photoUrl = includeOriginal && record.mediaType === 'photo'
+    ? await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucketName, Key: record.photoKey }), { expiresIn: 60 * 30 })
+    : undefined;
+  return {
+    id: record.id,
+    mediaType: record.mediaType,
+    date: record.date,
+    caption: record.caption,
+    person: record.person,
+    thumbnailUrl,
+    photoUrl,
+    youtubeUrl: record.youtubeId ? `https://www.youtube.com/watch?v=${record.youtubeId}` : undefined,
+    createdAt: record.createdAt,
+  };
+}
+
+async function listMedia(event) {
+  const query = event.queryStringParameters || {};
+  const rawLimit = Number(query.limit || 18);
+  const requestedLimit = Number.isFinite(rawLimit) ? rawLimit : 18;
+  const result = await ddb.send(new QueryCommand({
+    TableName: tableName,
+    KeyConditionExpression: 'pk = :pk',
+    ExpressionAttributeValues: { ':pk': 'SIMJI_MEDIA' },
+    ScanIndexForward: false,
+    Limit: Math.min(Math.max(requestedLimit, 1), 24),
+    ExclusiveStartKey: decodeCursor(query.cursor),
+  }));
+  return {
+    items: await Promise.all((result.Items || []).map((item) => publicMediaItem(item))),
+    nextCursor: encodeCursor(result.LastEvaluatedKey),
+  };
+}
+
+async function findMedia(id) {
+  let startKey;
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': 'SIMJI_MEDIA' },
+      ExclusiveStartKey: startKey,
+    }));
+    const record = (result.Items || []).find((item) => item.id === id);
+    if (record) return record;
+    startKey = result.LastEvaluatedKey;
+  } while (startKey);
+  return null;
+}
+
+async function getMedia(event) {
+  const id = event.pathParameters?.id;
+  if (!id) return response(404, { message: '사진 또는 영상을 찾을 수 없습니다.' });
+  const record = await findMedia(id);
+  if (!record) return response(404, { message: '사진 또는 영상을 찾을 수 없습니다.' });
+  return response(200, { item: await publicMediaItem(record, { includeOriginal: true }) });
+}
+
+async function savePhoto(event, member) {
+  const { imageBase64, thumbnailBase64, date = todayInKorea(), caption = '' } = parseBody(event);
+  if (!isValidDate(date)) return response(400, { message: '사진 날짜를 확인해 주세요.' });
+  const image = decodeImage(imageBase64, 4 * 1024 * 1024);
+  const thumbnail = decodeImage(thumbnailBase64, 1024 * 1024);
+  if (!image || !thumbnail) return response(400, { message: '사진을 읽지 못했어요. 다시 선택해 주세요.' });
+
+  const id = crypto.randomUUID();
+  const prefix = `media/${date.slice(0, 7)}/${id}`;
+  const photoKey = `${prefix}.jpg`;
+  const thumbnailKey = `${prefix}-thumb.jpg`;
+  await Promise.all([
+    s3.send(new PutObjectCommand({ Bucket: bucketName, Key: photoKey, Body: image, ContentType: 'image/jpeg', ServerSideEncryption: 'AES256' })),
+    s3.send(new PutObjectCommand({ Bucket: bucketName, Key: thumbnailKey, Body: thumbnail, ContentType: 'image/jpeg', ServerSideEncryption: 'AES256' })),
+  ]);
+  const record = {
+    pk: 'SIMJI_MEDIA',
+    sk: `MEDIA#${date}#${id}`,
+    id,
+    mediaType: 'photo',
+    date,
+    caption: normalizeCaption(caption),
+    person: member,
+    photoKey,
+    thumbnailKey,
+    createdAt: new Date().toISOString(),
+  };
+  await ddb.send(new PutCommand({ TableName: tableName, Item: record }));
+  return response(201, { item: await publicMediaItem(record) });
+}
+
+async function saveVideo(event, member) {
+  const { url, date = todayInKorea(), caption = '' } = parseBody(event);
+  if (!isValidDate(date)) return response(400, { message: '영상 날짜를 확인해 주세요.' });
+  const youtubeId = extractYouTubeId(url);
+  if (!youtubeId) return response(400, { message: '유효한 유튜브 영상 또는 Shorts 링크를 넣어 주세요.' });
+  const id = crypto.randomUUID();
+  const record = {
+    pk: 'SIMJI_MEDIA',
+    sk: `MEDIA#${date}#${id}`,
+    id,
+    mediaType: 'video',
+    date,
+    caption: normalizeCaption(caption),
+    person: member,
+    youtubeId,
+    createdAt: new Date().toISOString(),
+  };
+  await ddb.send(new PutCommand({ TableName: tableName, Item: record }));
+  return response(201, { item: await publicMediaItem(record) });
+}
+
+async function updateMedia(event, member) {
+  const id = event.pathParameters?.id;
+  const record = id && await findMedia(id);
+  if (!record) return response(404, { message: '사진 또는 영상을 찾을 수 없습니다.' });
+  if (record.person !== member) return response(403, { message: '등록한 멤버만 수정할 수 있습니다.' });
+  const { date, caption = '' } = parseBody(event);
+  if (!isValidDate(date)) return response(400, { message: '날짜를 확인해 주세요.' });
+  const updatedAt = new Date().toISOString();
+  const updated = { ...record, date, caption: normalizeCaption(caption), updatedAt, updatedBy: member };
+
+  if (date === record.date) {
+    await ddb.send(new UpdateCommand({
+      TableName: tableName,
+      Key: { pk: record.pk, sk: record.sk },
+      UpdateExpression: 'SET #caption = :caption, updatedAt = :updatedAt, updatedBy = :updatedBy',
+      ExpressionAttributeNames: { '#caption': 'caption' },
+      ExpressionAttributeValues: { ':caption': updated.caption, ':updatedAt': updatedAt, ':updatedBy': member },
+      ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+    }));
+  } else {
+    updated.sk = `MEDIA#${date}#${record.id}`;
+    await ddb.send(new TransactWriteCommand({
+      TransactItems: [
+        { Put: { TableName: tableName, Item: updated, ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)' } },
+        { Delete: { TableName: tableName, Key: { pk: record.pk, sk: record.sk }, ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)' } },
+      ],
+    }));
+  }
+  return response(200, { item: await publicMediaItem(updated) });
+}
+
+async function deleteMedia(event, member) {
+  const id = event.pathParameters?.id;
+  const record = id && await findMedia(id);
+  if (!record) return response(404, { message: '사진 또는 영상을 찾을 수 없습니다.' });
+  if (record.person !== member) return response(403, { message: '등록한 멤버만 삭제할 수 있습니다.' });
+  await ddb.send(new DeleteCommand({
+    TableName: tableName,
+    Key: { pk: record.pk, sk: record.sk },
+    ConditionExpression: 'attribute_exists(pk) AND attribute_exists(sk)',
+  }));
+  if (record.mediaType === 'photo') {
+    await Promise.all([record.photoKey, record.thumbnailKey].filter(Boolean).map((Key) => (
+      s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key })).catch((error) => console.error('Media cleanup failed', error.message))
+    )));
+  }
+  return response(200, { deleted: true });
 }
 
 async function scanAndSave(event, member) {
@@ -370,6 +575,12 @@ exports.handler = async (event) => {
     if (method === 'POST' && path === '/auth') return await authenticate(event);
     const member = getSessionMember(event);
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
+    if (method === 'GET' && path === '/media') return response(200, await listMedia(event));
+    if (method === 'GET' && /^\/media\/[^/]+$/.test(path)) return await getMedia(event);
+    if (method === 'POST' && path === '/media/photos') return await savePhoto(event, member);
+    if (method === 'POST' && path === '/media/videos') return await saveVideo(event, member);
+    if (method === 'PATCH' && /^\/media\/[^/]+$/.test(path)) return await updateMedia(event, member);
+    if (method === 'DELETE' && /^\/media\/[^/]+$/.test(path)) return await deleteMedia(event, member);
     if (method === 'POST' && path === '/expenses/scan') return await scanAndSave(event, member);
     if (method === 'POST' && path === '/incomes/scan') return await scanIncomeAndSave(event);
     if (method === 'PATCH' && /^\/expenses\/[^/]+\/payment$/.test(path)) return await updatePaymentStatus(event, member);

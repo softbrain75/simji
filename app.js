@@ -1,11 +1,3 @@
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch(() => {
-      // The app still works online when a browser blocks service workers.
-    });
-  });
-}
-
 const byId = (id) => document.getElementById(id);
 const storageKey = 'simji-ledger-v1';
 const memberStorageKey = 'simji-member-v1';
@@ -22,6 +14,60 @@ let activeFilter = 'all';
 let activeMember = '';
 let recordsCache = [];
 let toastTimer;
+let serviceWorkerRegistration;
+let serviceWorkerReloading = false;
+let pendingAppUpdate = false;
+
+function hasOpenModal() {
+  return Array.from(document.querySelectorAll('.modal-backdrop')).some((backdrop) => !backdrop.hidden);
+}
+function isSafeToReload() {
+  const activeElement = document.activeElement;
+  const activeField = activeElement?.matches('input, textarea, select')
+    && !activeElement.closest('[hidden]');
+  return !hasOpenModal() && !activeField;
+}
+function applyPendingAppUpdate() {
+  if (!pendingAppUpdate || !isSafeToReload()) return;
+  pendingAppUpdate = false;
+  serviceWorkerReloading = true;
+  window.location.reload();
+}
+function reloadForAppUpdate() {
+  if (serviceWorkerReloading) return;
+  if (!isSafeToReload()) {
+    pendingAppUpdate = true;
+    showToast('새 화면이 준비됐어요. ↻ 버튼을 눌러 적용하세요.');
+    return;
+  }
+  serviceWorkerReloading = true;
+  window.location.reload();
+}
+
+if ('serviceWorker' in navigator) {
+  let hadServiceWorkerController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadServiceWorkerController) {
+      hadServiceWorkerController = true;
+      return;
+    }
+    reloadForAppUpdate();
+  });
+
+  window.addEventListener('load', async () => {
+    try {
+      serviceWorkerRegistration = await navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' });
+      const checkForUpdate = () => serviceWorkerRegistration.update().catch(() => undefined);
+      checkForUpdate();
+      window.setInterval(checkForUpdate, 15 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') checkForUpdate();
+      });
+    } catch {
+      // The app still works online when a browser blocks service workers.
+    }
+  });
+}
 
 function formatMoney(value) { return `₩${Number(value || 0).toLocaleString('ko-KR')}`; }
 function formatAmountInput(value) {
@@ -185,9 +231,23 @@ function openExpense() {
   byId('expensePerson').value = activeMember;
   setToday();
 }
-function closeExpense() { byId('expenseBackdrop').hidden = true; }
+function closeExpense() {
+  byId('expenseBackdrop').hidden = true;
+  applyPendingAppUpdate();
+}
 function openIncome() { byId('incomeBackdrop').hidden = false; }
-function closeIncome() { byId('incomeBackdrop').hidden = true; }
+function closeIncome() {
+  byId('incomeBackdrop').hidden = true;
+  applyPendingAppUpdate();
+}
+function closeDetail() {
+  byId('detailBackdrop').hidden = true;
+  applyPendingAppUpdate();
+}
+function closeAllModals() {
+  document.querySelectorAll('.modal-backdrop').forEach((backdrop) => { backdrop.hidden = true; });
+  applyPendingAppUpdate();
+}
 function clearReceipt() {
   selectedFile = null;
   byId('receiptInput').value = '';
@@ -377,9 +437,19 @@ function signOut(focus = true) {
 byId('openExpense').addEventListener('click', openExpense);
 byId('closeExpense').addEventListener('click', closeExpense);
 byId('closeIncome').addEventListener('click', closeIncome);
-byId('closeDetail').addEventListener('click', () => { byId('detailBackdrop').hidden = true; });
-document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.addEventListener('click', (event) => { if (event.target === backdrop) backdrop.hidden = true; }));
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') document.querySelectorAll('.modal-backdrop').forEach((backdrop) => { backdrop.hidden = true; }); });
+byId('closeDetail').addEventListener('click', closeDetail);
+byId('refreshApp').addEventListener('click', async () => {
+  const button = byId('refreshApp');
+  button.classList.add('is-refreshing');
+  try {
+    await serviceWorkerRegistration?.update();
+  } catch {
+    // A normal reload still refreshes the latest app when the device is online.
+  }
+  window.setTimeout(() => window.location.reload(), 450);
+});
+document.querySelectorAll('.modal-backdrop').forEach((backdrop) => backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeAllModals(); }));
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeAllModals(); });
 
 byId('receiptInput').addEventListener('change', (event) => {
   const [file] = event.target.files;

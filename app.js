@@ -26,6 +26,8 @@ let mediaPhotoMetadata = [];
 let mediaPhotoMetadataLoading = false;
 let mediaSelectionVersion = 0;
 let activeMediaDetailId = '';
+let photoViewerRequestId = 0;
+let photoViewerObjectUrl = '';
 let mediaObserver;
 let serviceWorkerRegistration;
 let serviceWorkerReloading = false;
@@ -536,14 +538,23 @@ function closeMedia() {
   byId('mediaBackdrop').hidden = true;
   applyPendingAppUpdate();
 }
+function resetPhotoViewer() {
+  byId('mediaDetailBackdrop').classList.remove('media-detail-backdrop--viewer');
+  byId('mediaDetailContent').closest('.media-detail').classList.remove('media-detail--photo', 'media-detail--viewer');
+  if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
+  photoViewerObjectUrl = '';
+  photoViewerRequestId += 1;
+}
 function closeMediaDetail() {
   byId('mediaDetailBackdrop').hidden = true;
-  byId('mediaDetailContent').closest('.media-detail').classList.remove('media-detail--photo');
+  resetPhotoViewer();
   activeMediaDetailId = '';
   applyPendingAppUpdate();
 }
 function closeAllModals() {
   document.querySelectorAll('.modal-backdrop').forEach((backdrop) => { backdrop.hidden = true; });
+  resetPhotoViewer();
+  activeMediaDetailId = '';
   applyPendingAppUpdate();
 }
 function clearReceipt() {
@@ -1002,21 +1013,116 @@ function bindMediaPhotoCarousel(item) {
     moveMediaPhoto(distanceY < 0 ? 1 : -1);
   }, { passive: true });
 }
-async function openMediaDetail(item) {
-  activeMediaDetailId = item.id;
-  byId('mediaDetailBackdrop').hidden = false;
-  if (item.mediaType === 'video') {
-    renderMediaDetail(item);
+function photoViewerItems() {
+  return mediaItems.filter((item) => item.mediaType === 'photo');
+}
+function photoCacheKey(id) {
+  return new Request(`${location.origin}/__simji_viewed_photo__/${encodeURIComponent(id)}`);
+}
+async function cachedPhotoViewerUrl(id) {
+  if (!('caches' in window)) return '';
+  try {
+    const cache = await caches.open('simji-viewed-photos-v1');
+    const response = await cache.match(photoCacheKey(id));
+    if (!response) return '';
+    const blob = await response.blob();
+    if (!blob.size) return '';
+    if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
+    photoViewerObjectUrl = URL.createObjectURL(blob);
+    return photoViewerObjectUrl;
+  } catch {
+    return '';
+  }
+}
+async function cacheViewedPhoto(id, photoUrl) {
+  if (!('caches' in window) || !photoUrl) return;
+  try {
+    const cache = await caches.open('simji-viewed-photos-v1');
+    if (await cache.match(photoCacheKey(id))) return;
+    const response = await fetch(photoUrl);
+    if (response.ok) await cache.put(photoCacheKey(id), response.clone());
+  } catch {
+    // Caching is best effort. The signed source URL remains available for this view.
+  }
+}
+function renderPhotoViewer(item, photoUrl) {
+  const backdrop = byId('mediaDetailBackdrop');
+  const dialog = byId('mediaDetailContent').closest('.media-detail');
+  backdrop.classList.add('media-detail-backdrop--viewer');
+  dialog.classList.remove('media-detail--photo');
+  dialog.classList.add('media-detail--viewer');
+  byId('mediaDetailContent').innerHTML = `<div class="photo-fullscreen-viewer" id="photoFullscreenViewer"><img src="${escapeHtml(photoUrl)}" alt="사진" /></div>`;
+  bindPhotoViewerSwipe();
+}
+async function movePhotoViewer(direction) {
+  let photos = photoViewerItems();
+  let currentIndex = photos.findIndex((item) => item.id === activeMediaDetailId);
+  let target = photos[currentIndex + direction];
+  if (!target && direction > 0 && mediaHasMore) {
+    await loadMedia();
+    photos = photoViewerItems();
+    currentIndex = photos.findIndex((item) => item.id === activeMediaDetailId);
+    target = photos[currentIndex + direction];
+  }
+  if (!target) {
+    showToast(direction > 0 ? '마지막 사진이에요.' : '첫 사진이에요.');
     return;
   }
+  await openMediaDetail(target);
+}
+function bindPhotoViewerSwipe() {
+  const viewer = byId('photoFullscreenViewer');
+  if (!viewer) return;
+  let startX = 0;
+  let startY = 0;
+  viewer.addEventListener('touchstart', (event) => {
+    const touch = event.changedTouches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+  }, { passive: true });
+  viewer.addEventListener('touchend', (event) => {
+    const touch = event.changedTouches[0];
+    const distanceX = touch.clientX - startX;
+    const distanceY = touch.clientY - startY;
+    if (Math.abs(distanceX) < 54 || Math.abs(distanceX) < Math.abs(distanceY) * 1.3) return;
+    movePhotoViewer(distanceX < 0 ? 1 : -1);
+  }, { passive: true });
+}
+async function openPhotoViewer(item) {
+  const requestId = ++photoViewerRequestId;
+  if (photoViewerObjectUrl) URL.revokeObjectURL(photoViewerObjectUrl);
+  photoViewerObjectUrl = '';
+  const dialog = byId('mediaDetailContent').closest('.media-detail');
+  byId('mediaDetailBackdrop').classList.add('media-detail-backdrop--viewer');
+  dialog.classList.remove('media-detail--photo');
+  dialog.classList.add('media-detail--viewer');
   byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오는 중이에요…</p>';
+  const cachedUrl = await cachedPhotoViewerUrl(item.id);
+  if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
+  if (cachedUrl) {
+    renderPhotoViewer(item, cachedUrl);
+    return;
+  }
   try {
     const result = await api(`/media/${encodeURIComponent(item.id)}`);
-    renderMediaDetail({ ...item, ...result.item }, result.item.photoUrl);
+    if (requestId !== photoViewerRequestId || activeMediaDetailId !== item.id) return;
+    renderPhotoViewer(item, result.item.photoUrl);
+    cacheViewedPhoto(item.id, result.item.photoUrl);
   } catch (error) {
     byId('mediaDetailContent').innerHTML = '<p class="media-detail-wait">사진을 불러오지 못했어요.</p>';
     showToast(error.message || '사진을 불러오지 못했어요.');
   }
+}
+async function openMediaDetail(item) {
+  activeMediaDetailId = item.id;
+  byId('mediaDetailBackdrop').hidden = false;
+  if (item.mediaType === 'video') {
+    resetPhotoViewer();
+    activeMediaDetailId = item.id;
+    renderMediaDetail(item);
+    return;
+  }
+  await openPhotoViewer(item);
 }
 async function deleteMediaItem(item, button) {
   if (!window.confirm(item.mediaType === 'photo' ? '이 사진을 삭제할까요? 삭제 후에는 되돌릴 수 없어요.' : '이 유튜브 링크를 삭제할까요?')) return;

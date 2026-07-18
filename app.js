@@ -901,62 +901,90 @@ function mediaEditorMarkup(item) {
   if (item.person !== activeMember || item.mediaType === 'photo') return '';
   return `<form class="media-editor" id="mediaEditForm"><label>날짜<input name="date" type="date" value="${escapeHtml(item.date)}" required /></label><button type="submit">수정 저장</button></form><button class="media-delete" id="mediaDeleteButton" type="button">이 영상 링크 삭제</button>`;
 }
-function photoGalleryItems() {
-  return mediaItems.filter((item) => item.mediaType === 'photo');
+function mediaGalleryItems() {
+  return mediaItems;
 }
 function mediaPhotoPeekMarkup(item, direction) {
   const position = direction < 0 ? 'previous' : 'next';
   if (!item) return `<div class="media-photo-peek media-photo-peek--${position} is-empty" aria-hidden="true"></div>`;
-  const label = direction < 0 ? '이전 사진 보기' : '다음 사진 보기';
-  return `<button class="media-photo-peek media-photo-peek--${position}" type="button" data-media-direction="${direction}" aria-label="${label}"><img src="${escapeHtml(item.thumbnailUrl)}" alt="" /></button>`;
+  const isVideo = item.mediaType === 'video';
+  const label = direction < 0 ? `이전 ${isVideo ? '영상' : '사진'} 보기` : `다음 ${isVideo ? '영상' : '사진'} 보기`;
+  return `<button class="media-photo-peek media-photo-peek--${position}${isVideo ? ' media-photo-peek--video' : ''}" type="button" data-media-direction="${direction}" aria-label="${label}"><img src="${escapeHtml(item.thumbnailUrl)}" alt="" />${isVideo ? '<span class="media-photo-peek__video">▶</span>' : ''}</button>`;
 }
-function mediaPhotoCarouselMarkup(item, photoUrl) {
-  const photos = photoGalleryItems();
-  const currentIndex = photos.findIndex((entry) => entry.id === item.id);
-  const previous = currentIndex > 0 ? photos[currentIndex - 1] : (photos.length > 1 ? photos.at(-1) : null);
-  const next = currentIndex >= 0 && currentIndex < photos.length - 1 ? photos[currentIndex + 1] : (photos.length > 1 ? photos[0] : null);
+function mediaCarouselCenterMarkup(item, sourceUrl) {
+  if (item.mediaType === 'video') {
+    return `<div class="media-photo-main media-video-main" id="mediaVideoMain"><button class="media-video-preview" id="mediaVideoPreview" type="button" aria-label="유튜브 영상 재생"><img src="${escapeHtml(sourceUrl)}" alt="유튜브 영상 썸네일" /><span>▶</span><b>YouTube 영상 재생</b></button></div>`;
+  }
+  return `<div class="media-photo-main" id="mediaPhotoMain" role="button" tabindex="0" aria-label="사진을 누르면 삭제 메뉴 표시" aria-expanded="false"><img class="media-detail-image" src="${escapeHtml(sourceUrl)}" alt="사진" /></div>`;
+}
+function mediaPhotoCarouselMarkup(item, sourceUrl) {
+  const items = mediaGalleryItems();
+  const currentIndex = items.findIndex((entry) => entry.id === item.id);
+  const previous = currentIndex > 0 ? items[currentIndex - 1] : (items.length > 1 ? items.at(-1) : null);
+  const next = currentIndex >= 0 && currentIndex < items.length - 1 ? items[currentIndex + 1] : (items.length > 1 ? items[0] : null);
   const deleteControl = item.person === activeMember
+    && item.mediaType === 'photo'
     ? '<button class="media-photo-delete" id="mediaPhotoDeleteButton" type="button" hidden aria-label="이 사진 삭제" title="이 사진 삭제">🗑</button>'
     : '';
-  return `<div class="media-photo-carousel" id="mediaPhotoCarousel">${mediaPhotoPeekMarkup(previous, -1)}<div class="media-photo-main" id="mediaPhotoMain" role="button" tabindex="0" aria-label="사진을 누르면 삭제 메뉴 표시" aria-expanded="false"><img class="media-detail-image" src="${escapeHtml(photoUrl)}" alt="사진" /></div>${mediaPhotoPeekMarkup(next, 1)}${deleteControl}</div>`;
+  return `<div class="media-photo-carousel" id="mediaPhotoCarousel">${mediaPhotoPeekMarkup(previous, -1)}${mediaCarouselCenterMarkup(item, sourceUrl)}${mediaPhotoPeekMarkup(next, 1)}${deleteControl}</div>`;
 }
 function renderMediaDetail(item, photoUrl = '') {
   const isVideo = item.mediaType === 'video';
   const dialog = byId('mediaDetailContent').closest('.media-detail');
   dialog.classList.toggle('media-detail--photo', !isVideo);
-  if (isVideo) {
-    const visual = `<a class="media-detail-video" href="${escapeHtml(item.youtubeUrl)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(item.thumbnailUrl)}" alt="유튜브 영상" /><span>▶</span><b>유튜브에서 보기</b></a>`;
-    byId('mediaDetailContent').innerHTML = `<div class="media-detail-content">${visual}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p></div>${mediaEditorMarkup(item)}</div>`;
-    const editForm = byId('mediaEditForm');
-    if (editForm) editForm.addEventListener('submit', (event) => saveMediaEdit(event, item));
-    const deleteButton = byId('mediaDeleteButton');
-    if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(item, deleteButton));
-    return;
-  }
-  const location = item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
-  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content media-detail-content--photo">${mediaPhotoCarouselMarkup(item, photoUrl)}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}</div></div>`;
+  const location = !isVideo && item.locationName ? `<p class="media-detail-location">⌖ ${escapeHtml(item.locationName)}</p>` : '';
+  const sourceUrl = isVideo ? item.thumbnailUrl : photoUrl;
+  byId('mediaDetailContent').innerHTML = `<div class="media-detail-content${isVideo ? '' : ' media-detail-content--photo'}">${mediaPhotoCarouselMarkup(item, sourceUrl)}<div class="media-detail-copy"><p class="media-detail-date">${formatMediaDate(item.date)}</p>${location}</div>${mediaEditorMarkup(item)}</div>`;
   bindMediaPhotoCarousel(item);
+  const editForm = byId('mediaEditForm');
+  if (editForm) editForm.addEventListener('submit', (event) => saveMediaEdit(event, item));
+  const deleteButton = byId('mediaDeleteButton');
+  if (deleteButton) deleteButton.addEventListener('click', () => deleteMediaItem(item, deleteButton));
 }
 async function moveMediaPhoto(direction) {
-  let photos = photoGalleryItems();
-  let currentIndex = photos.findIndex((item) => item.id === activeMediaDetailId);
-  let target = photos[currentIndex + direction];
+  let items = mediaGalleryItems();
+  let currentIndex = items.findIndex((item) => item.id === activeMediaDetailId);
+  let target = items[currentIndex + direction];
   if (!target && direction > 0 && mediaHasMore) {
     await loadMedia();
-    photos = photoGalleryItems();
-    currentIndex = photos.findIndex((item) => item.id === activeMediaDetailId);
-    target = photos[currentIndex + direction];
+    items = mediaGalleryItems();
+    currentIndex = items.findIndex((item) => item.id === activeMediaDetailId);
+    target = items[currentIndex + direction];
   }
-  if (!target && photos.length > 1) target = direction > 0 ? photos[0] : photos.at(-1);
+  if (!target && items.length > 1) target = direction > 0 ? items[0] : items.at(-1);
   if (!target) {
-    showToast('보관된 사진이 한 장이에요.');
+    showToast('보관된 사진·영상이 한 개예요.');
     return;
   }
   await openMediaDetail(target);
 }
+function youtubeEmbedUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    let id = '';
+    if (host === 'youtu.be') id = url.pathname.split('/').filter(Boolean)[0] || '';
+    if (['youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(host)) {
+      id = url.pathname === '/watch' ? (url.searchParams.get('v') || '') : (url.pathname.split('/').filter(Boolean)[1] || '');
+    }
+    return /^[A-Za-z0-9_-]{11}$/.test(id) ? `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&playsinline=1&rel=0` : '';
+  } catch {
+    return '';
+  }
+}
+function openEmbeddedYouTube(item) {
+  const main = byId('mediaVideoMain');
+  const embedUrl = youtubeEmbedUrl(item.youtubeUrl);
+  if (!main || !embedUrl) {
+    window.open(item.youtubeUrl, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  main.innerHTML = `<div class="media-video-player"><iframe src="${embedUrl}" title="유튜브 영상" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>`;
+}
 function bindMediaPhotoCarousel(item) {
   const carousel = byId('mediaPhotoCarousel');
-  const main = byId('mediaPhotoMain');
+  const isVideo = item.mediaType === 'video';
+  const main = byId(isVideo ? 'mediaVideoMain' : 'mediaPhotoMain');
   const deleteButton = byId('mediaPhotoDeleteButton');
   if (!carousel || !main) return;
   carousel.querySelectorAll('[data-media-direction]').forEach((button) => button.addEventListener('click', () => moveMediaPhoto(Number(button.dataset.mediaDirection))));
@@ -969,15 +997,23 @@ function bindMediaPhotoCarousel(item) {
   let startX = 0;
   let startY = 0;
   let ignoreNextClick = false;
-  main.addEventListener('click', () => {
-    if (ignoreNextClick) { ignoreNextClick = false; return; }
-    toggleDeleteControl();
-  });
-  main.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    toggleDeleteControl();
-  });
+  if (isVideo) {
+    const preview = byId('mediaVideoPreview');
+    if (preview) preview.addEventListener('click', () => {
+      if (ignoreNextClick) { ignoreNextClick = false; return; }
+      openEmbeddedYouTube(item);
+    });
+  } else {
+    main.addEventListener('click', () => {
+      if (ignoreNextClick) { ignoreNextClick = false; return; }
+      toggleDeleteControl();
+    });
+    main.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggleDeleteControl();
+    });
+  }
   main.addEventListener('touchstart', (event) => {
     const touch = event.changedTouches[0];
     startX = touch.clientX;

@@ -10,6 +10,7 @@ frontend:
       - index.html
       - styles.css
       - detail-edit.css
+      - media.css
       - app.js
       - config.js
       - manifest.webmanifest

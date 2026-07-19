@@ -52,6 +52,7 @@
           <input id="pinLoginCode" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6" placeholder="숫자 6자리" required />
           <p class="login-error" id="pinLoginError" hidden>개인 PIN을 확인해 주세요.</p>
           <button type="submit">PIN으로 로그인 <span>→</span></button>
+          <button class="login-alt" id="registerPasskeyFromPin" type="button">이 기기에 지문·얼굴 등록 <span>→</span></button>
           <button class="login-back" id="cancelPinLogin" type="button">돌아가기</button>
         </form>
         <p class="login-note" id="loginNote">인증 정보는 저장하지 않고, 이 기기의 멤버만 기억합니다.</p>
@@ -226,6 +227,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=44"></script>
+    <script src="app.js?v=45"></script>
   </body>
 </html>

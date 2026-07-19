@@ -1783,6 +1783,22 @@ async function registerPasskey(enrollmentToken, pin) {
   });
 }
 
+async function registerAdditionalPasskey() {
+  assertPasskeySupported();
+  const optionResult = await api('/auth/passkey/add/options', { method: 'POST', body: {} });
+  let credential;
+  try {
+    credential = await navigator.credentials.create({ publicKey: passkeyRegistrationOptions(optionResult.options) });
+  } catch (error) {
+    throw passkeyBrowserError(error, 'register');
+  }
+  if (!credential) throw new Error('지문·얼굴 등록을 완료하지 못했습니다. 다시 시도해 주세요.');
+  return api('/auth/passkey/add/verify', {
+    method: 'POST',
+    body: { requestId: optionResult.requestId, credential: serializePasskeyRegistration(credential) },
+  });
+}
+
 function passkeyBrowserError(error, action) {
   if (error?.name === 'NotAllowedError') {
     return new Error(action === 'login'
@@ -1903,6 +1919,33 @@ byId('pinLoginForm').addEventListener('submit', async (event) => {
   } finally {
     button.disabled = false;
     button.innerHTML = 'PIN으로 로그인 <span>→</span>';
+  }
+});
+
+byId('registerPasskeyFromPin').addEventListener('click', async (event) => {
+  const member = localStorage.getItem(deviceMemberStorageKey) || byId('pinLoginMember').value.trim();
+  const pin = byId('pinLoginCode').value.replace(/\D/g, '');
+  const button = event.currentTarget;
+  if (!members.includes(member)) { setPinLoginError('아이디를 입력해 주세요.'); return; }
+  if (!/^\d{6}$/.test(pin)) { setPinLoginError('개인 PIN 6자리를 입력해 주세요.'); return; }
+  button.disabled = true;
+  button.textContent = 'Face ID 등록 준비 중…';
+  try {
+    const result = await api('/auth/pin', { method: 'POST', body: { member, pin }, authenticated: false });
+    sessionToken = result.token;
+    button.textContent = 'Face ID로 등록 중…';
+    await registerAdditionalPasskey();
+    enterApp(result.member, result.token);
+    localStorage.setItem(loginMethodStorageKey, 'passkey');
+    setPinLoginError();
+    await loadRecords();
+    showToast('이 기기에 지문·얼굴 인증을 등록했어요.');
+  } catch (error) {
+    sessionToken = '';
+    setPinLoginError(error.message || '지문·얼굴 인증을 등록하지 못했습니다. 다시 시도해 주세요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '이 기기에 지문·얼굴 등록 <span>→</span>';
   }
 });
 

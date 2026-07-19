@@ -403,6 +403,94 @@ async function verifyPasskeyRegistration(event) {
   return response(200, { member: enrollment.member, token: createSession(enrollment.member) });
 }
 
+async function createAdditionalPasskeyRegistrationOptions(event) {
+  const session = getSession(event);
+  const existing = await listPasskeys(session.member);
+  const options = await generateRegistrationOptions({
+    rpName: '심지회',
+    rpID: passkeyRpId,
+    userName: session.member,
+    userDisplayName: `${session.member} · 심지회`,
+    userID: Buffer.from(`simji:${session.member}`, 'utf8'),
+    attestationType: 'none',
+    authenticatorSelection: {
+      authenticatorAttachment: 'platform',
+      residentKey: 'required',
+      userVerification: 'required',
+    },
+    supportedAlgorithmIDs: [-7, -257],
+    excludeCredentials: existing.map((passkey) => ({
+      id: passkey.credentialId,
+      transports: passkey.transports || [],
+    })),
+  });
+  const requestId = crypto.randomUUID();
+  await ddb.send(new PutCommand({
+    TableName: tableName,
+    Item: {
+      pk: `AUTH#${session.member}`,
+      sk: `CHALLENGE#ADDITIONAL#${requestId}`,
+      challenge: options.challenge,
+      expiresAt: Date.now() + 1000 * 60 * 5,
+      createdAt: new Date().toISOString(),
+    },
+  }));
+  return response(200, { requestId, options });
+}
+
+async function verifyAdditionalPasskeyRegistration(event) {
+  const session = getSession(event);
+  const { requestId, credential } = parseBody(event);
+  if (!requestId || !credential?.id) throw new Error('인증 정보를 확인하지 못했습니다. 다시 시도해 주세요.');
+  const challengeKey = { pk: `AUTH#${session.member}`, sk: `CHALLENGE#ADDITIONAL#${requestId}` };
+  const stored = await ddb.send(new GetCommand({ TableName: tableName, Key: challengeKey }));
+  if (!stored.Item || stored.Item.expiresAt < Date.now()) throw new Error('기기 등록 시간이 만료되었습니다. PIN 로그인 후 다시 시도해 주세요.');
+
+  const verification = await verifyRegistrationResponse({
+    response: credential,
+    expectedChallenge: stored.Item.challenge,
+    expectedOrigin: passkeyOrigin,
+    expectedRPID: passkeyRpId,
+    requireUserVerification: true,
+    supportedAlgorithmIDs: [-7, -257],
+  });
+  if (!verification.verified || !verification.registrationInfo) throw new Error('기기 등록을 확인하지 못했습니다. 다시 시도해 주세요.');
+
+  const { credential: verifiedCredential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  const credentialId = verifiedCredential.id;
+  const now = new Date().toISOString();
+  await ddb.send(new TransactWriteCommand({
+    TransactItems: [
+      {
+        Put: {
+          TableName: tableName,
+          Item: {
+            pk: `AUTH#${session.member}`,
+            sk: `PASSKEY#${credentialId}`,
+            credentialId,
+            publicKey: Buffer.from(verifiedCredential.publicKey).toString('base64url'),
+            counter: verifiedCredential.counter,
+            transports: credential.response?.transports || [],
+            deviceType: credentialDeviceType,
+            backedUp: credentialBackedUp,
+            createdAt: now,
+          },
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        },
+      },
+      {
+        Put: {
+          TableName: tableName,
+          Item: { pk: 'AUTH#INDEX', sk: `CREDENTIAL#${credentialId}`, member: session.member, createdAt: now },
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        },
+      },
+      { Delete: { TableName: tableName, Key: challengeKey } },
+    ],
+  }));
+  return response(200, { registered: true });
+}
+
 async function createPasskeyAuthenticationOptions(event) {
   const { member: requestedMember = '' } = parseBody(event);
   const member = String(requestedMember).trim();
@@ -1001,6 +1089,8 @@ exports.handler = async (event) => {
     if (method === 'POST' && path === '/auth/pin/setup') return await setPersonalPin(event);
     if (method === 'POST' && path === '/auth/passkey/register/options') return await createPasskeyRegistrationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/register/verify') return await verifyPasskeyRegistration(event);
+    if (method === 'POST' && path === '/auth/passkey/add/options') return await createAdditionalPasskeyRegistrationOptions(event);
+    if (method === 'POST' && path === '/auth/passkey/add/verify') return await verifyAdditionalPasskeyRegistration(event);
     if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/verify') return await verifyPasskeyAuthentication(event);
     const member = getSessionMember(event);

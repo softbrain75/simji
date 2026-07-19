@@ -163,6 +163,18 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /auth/passkey/register/verify
             Method: POST
+        PasskeyAdditionalRegistrationOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/passkey/add/options
+            Method: POST
+        PasskeyAdditionalRegistrationVerify:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/passkey/add/verify
+            Method: POST
         PasskeyAuthenticationOptions:
           Type: HttpApi
           Properties:

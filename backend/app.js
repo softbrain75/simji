@@ -403,10 +403,17 @@ async function verifyPasskeyRegistration(event) {
   return response(200, { member: enrollment.member, token: createSession(enrollment.member) });
 }
 
-async function createPasskeyAuthenticationOptions() {
+async function createPasskeyAuthenticationOptions(event) {
+  const { member: requestedMember = '' } = parseBody(event);
+  const member = String(requestedMember).trim();
+  const knownMember = memberNames.includes(member) ? member : '';
+  const passkeys = knownMember ? await listPasskeys(knownMember) : [];
   const options = await generateAuthenticationOptions({
     rpID: passkeyRpId,
-    allowCredentials: [],
+    allowCredentials: passkeys.map((passkey) => ({
+      id: passkey.credentialId,
+      transports: passkey.transports || [],
+    })),
     userVerification: 'required',
   });
   const requestId = crypto.randomUUID();
@@ -416,11 +423,12 @@ async function createPasskeyAuthenticationOptions() {
       pk: 'AUTH#CHALLENGE',
       sk: `LOGIN#${requestId}`,
       challenge: options.challenge,
+      ...(knownMember ? { member: knownMember } : {}),
       expiresAt: Date.now() + 1000 * 60 * 5,
       createdAt: new Date().toISOString(),
     },
   }));
-  return response(200, { requestId, options });
+  return response(200, { requestId, options, hasPasskey: passkeys.length > 0 });
 }
 
 async function verifyPasskeyAuthentication(event) {
@@ -436,6 +444,9 @@ async function verifyPasskeyAuthentication(event) {
   }));
   const member = index.Item?.member;
   if (!memberNames.includes(member)) throw new Error('등록되지 않은 기기입니다.');
+  if (challenge.Item.member && challenge.Item.member !== member) {
+    throw new Error('이 기기에 등록된 멤버의 인증키만 사용할 수 있어요.');
+  }
   const storedPasskey = await ddb.send(new GetCommand({
     TableName: tableName,
     Key: { pk: `AUTH#${member}`, sk: `PASSKEY#${credential.id}` },
@@ -990,7 +1001,7 @@ exports.handler = async (event) => {
     if (method === 'POST' && path === '/auth/pin/setup') return await setPersonalPin(event);
     if (method === 'POST' && path === '/auth/passkey/register/options') return await createPasskeyRegistrationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/register/verify') return await verifyPasskeyRegistration(event);
-    if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions();
+    if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/verify') return await verifyPasskeyAuthentication(event);
     const member = getSessionMember(event);
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });

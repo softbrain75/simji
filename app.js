@@ -1769,7 +1769,12 @@ async function registerPasskey(enrollmentToken, pin) {
   const optionResult = await api('/auth/passkey/register/options', {
     method: 'POST', body: { enrollmentToken, pin }, authenticated: false,
   });
-  const credential = await navigator.credentials.create({ publicKey: passkeyRegistrationOptions(optionResult.options) });
+  let credential;
+  try {
+    credential = await navigator.credentials.create({ publicKey: passkeyRegistrationOptions(optionResult.options) });
+  } catch (error) {
+    throw passkeyBrowserError(error, 'register');
+  }
   if (!credential) throw new Error('기기 등록을 완료하지 못했습니다. 다시 시도해 주세요.');
   return api('/auth/passkey/register/verify', {
     method: 'POST',
@@ -1778,10 +1783,36 @@ async function registerPasskey(enrollmentToken, pin) {
   });
 }
 
+function passkeyBrowserError(error, action) {
+  if (error?.name === 'NotAllowedError') {
+    return new Error(action === 'login'
+      ? '이 기기에 등록된 지문·얼굴 인증키를 찾지 못했어요. PIN으로 로그인하거나 처음 등록하기에서 이 기기를 등록해 주세요.'
+      : '지문·얼굴 인증이 취소되었거나 이 기기에서 사용할 수 없어요. 기기의 Face ID·Touch ID 설정을 확인해 주세요.');
+  }
+  if (error?.name === 'InvalidStateError') return new Error('이 기기에 이미 등록된 인증키가 있어요. 지문·얼굴 인증으로 로그인해 주세요.');
+  if (error?.name === 'SecurityError') return new Error('보안 연결을 확인하지 못했어요. 앱을 완전히 닫은 뒤 다시 열어 주세요.');
+  return error instanceof Error ? error : new Error('지문·얼굴 인증을 완료하지 못했습니다. 다시 시도해 주세요.');
+}
+
 async function loginWithPasskey() {
   assertPasskeySupported();
-  const optionResult = await api('/auth/passkey/options', { method: 'POST', body: {}, authenticated: false });
-  const credential = await navigator.credentials.get({ publicKey: passkeyAuthenticationOptions(optionResult.options) });
+  const deviceMember = localStorage.getItem(deviceMemberStorageKey);
+  const knownMember = members.includes(deviceMember) ? deviceMember : '';
+  const optionResult = await api('/auth/passkey/options', {
+    method: 'POST', body: knownMember ? { member: knownMember } : {}, authenticated: false,
+  });
+  if (knownMember && !optionResult.hasPasskey) {
+    throw new Error(`${knownMember}님의 지문·얼굴 인증은 이 기기에 아직 등록되지 않았어요. PIN으로 로그인해 주세요.`);
+  }
+  let credential;
+  try {
+    credential = await navigator.credentials.get({
+      publicKey: passkeyAuthenticationOptions(optionResult.options),
+      mediation: 'optional',
+    });
+  } catch (error) {
+    throw passkeyBrowserError(error, 'login');
+  }
   if (!credential) throw new Error('지문·얼굴 인증을 완료하지 못했습니다. 다시 시도해 주세요.');
   return api('/auth/passkey/verify', {
     method: 'POST',

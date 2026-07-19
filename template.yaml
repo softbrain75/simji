@@ -145,6 +145,12 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /auth/pin
             Method: POST
+        PersonalPinSetup:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/pin/setup
+            Method: POST
         PasskeyRegistrationOptions:
           Type: HttpApi
           Properties:

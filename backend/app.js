@@ -52,8 +52,8 @@ function createSignedToken(payload) {
   return `${encoded}.${sign(encoded)}`;
 }
 
-function createSession(member) {
-  return createSignedToken({ member, purpose: 'session', exp: Date.now() + 1000 * 60 * 60 * 24 * 180 });
+function createSession(member, authMethod = 'passkey') {
+  return createSignedToken({ member, purpose: 'session', authMethod, exp: Date.now() + 1000 * 60 * 60 * 24 * 180 });
 }
 
 function readSignedToken(token) {
@@ -66,11 +66,15 @@ function readSignedToken(token) {
   return tokenPayload;
 }
 
-function getSessionMember(event) {
+function getSession(event) {
   const authorization = event.headers?.authorization || event.headers?.Authorization || '';
   const session = readSignedToken(authorization.replace(/^Bearer\s+/i, ''));
   if (session.purpose !== 'session') throw new Error('로그인이 필요합니다.');
-  return session.member;
+  return session;
+}
+
+function getSessionMember(event) {
+  return getSession(event).member;
 }
 
 function getEnrollmentMember(enrollmentToken) {
@@ -274,7 +278,19 @@ async function authenticateWithPersonalPin(event) {
     return response(401, { message: '이름 또는 개인 PIN을 확인해 주세요.' });
   }
   await clearPinGuard(member, 'LOGIN_PIN_GUARD');
-  return response(200, { member, token: createSession(member) });
+  return response(200, { member, token: createSession(member, 'pin') });
+}
+
+async function setPersonalPin(event) {
+  const session = getSession(event);
+  if (session.authMethod !== 'passkey') return response(403, { message: '개인 PIN 설정은 지문·얼굴 인증 후에만 할 수 있어요.' });
+  const { pin } = parseBody(event);
+  const secret = createPersonalPinSecret(normalizePersonalPin(pin));
+  await ddb.send(new PutCommand({
+    TableName: tableName,
+    Item: { pk: `AUTH#${session.member}`, sk: 'LOGIN_PIN', ...secret, updatedAt: new Date().toISOString() },
+  }));
+  return response(200, { configured: true });
 }
 
 async function listPasskeys(member) {
@@ -457,7 +473,8 @@ async function verifyPasskeyAuthentication(event) {
       { Delete: { TableName: tableName, Key: challengeKey } },
     ],
   }));
-  return response(200, { member, token: createSession(member) });
+  const personalPin = await getPersonalPinSecret(member);
+  return response(200, { member, token: createSession(member, 'passkey'), needsPinSetup: !personalPin });
 }
 
 async function listRecords() {
@@ -972,6 +989,7 @@ exports.handler = async (event) => {
   try {
     if (method === 'POST' && path === '/auth') return await authenticate(event);
     if (method === 'POST' && path === '/auth/pin') return await authenticateWithPersonalPin(event);
+    if (method === 'POST' && path === '/auth/pin/setup') return await setPersonalPin(event);
     if (method === 'POST' && path === '/auth/passkey/register/options') return await createPasskeyRegistrationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/register/verify') return await verifyPasskeyRegistration(event);
     if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions();

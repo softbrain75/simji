@@ -1763,6 +1763,16 @@ async function loginWithPasskey() {
   });
 }
 
+async function configureMissingPin(result) {
+  if (!result.needsPinSetup) return;
+  const pin = window.prompt('PIN 로그인용 숫자 6자리를 정해 주세요.');
+  if (pin === null) { showToast('개인 PIN은 다음 지문·얼굴 로그인 때 설정할 수 있어요.'); return; }
+  const confirmation = window.prompt('PIN 6자리를 한 번 더 입력해 주세요.');
+  if (!/^\d{6}$/.test(pin) || pin !== confirmation) { showToast('PIN은 같은 숫자 6자리로 다시 설정해 주세요.'); return; }
+  await api('/auth/pin/setup', { method: 'POST', body: { pin } });
+  showToast('개인 PIN을 설정했어요.');
+}
+
 function setLoginError(message = '') {
   const error = byId('loginError');
   if (message) error.textContent = message;
@@ -1844,6 +1854,7 @@ byId('passkeyLogin').addEventListener('click', async (event) => {
     enterApp(result.member, result.token);
     localStorage.setItem(loginMethodStorageKey, 'passkey');
     setLoginError();
+    await configureMissingPin(result);
     await loadRecords();
   } catch (error) {
     setLoginError(error.message || '지문·얼굴 인증을 완료하지 못했습니다. 다시 시도해 주세요.');

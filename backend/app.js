@@ -1,18 +1,26 @@
 const crypto = require('node:crypto');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand, DeleteCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCommand, DeleteCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 const { GeoPlacesClient, ReverseGeocodeCommand } = require('@aws-sdk/client-geo-places');
 const { LocationClient, SearchPlaceIndexForPositionCommand } = require('@aws-sdk/client-location');
+const {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} = require('@simplewebauthn/server');
 
 const tableName = process.env.TABLE_NAME;
 const bucketName = process.env.BUCKET_NAME;
 const sessionSecret = process.env.SESSION_SECRET;
 const memberNames = (process.env.MEMBERS || '').split(',').map((name) => name.trim()).filter(Boolean);
-const loginSuffix = process.env.LOGIN_SUFFIX || '0717';
 const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
+const passkeyRpId = process.env.PASSKEY_RP_ID;
+const passkeyOrigin = process.env.PASSKEY_ORIGIN;
+const memberPinHashes = JSON.parse(Buffer.from(process.env.MEMBER_PIN_HASHES || '', 'base64url').toString('utf8') || '{}');
 const modelId = process.env.BEDROCK_MODEL_ID || 'global.amazon.nova-2-lite-v1:0';
 const treasurerMember = process.env.TREASURER || '성호';
 const geoPlacesRegion = process.env.GEO_PLACES_REGION || 'ap-northeast-1';
@@ -39,21 +47,89 @@ const toBase64Url = (value) => Buffer.from(value).toString('base64url');
 const fromBase64Url = (value) => Buffer.from(value, 'base64url').toString('utf8');
 const sign = (value) => crypto.createHmac('sha256', sessionSecret).update(value).digest('base64url');
 
-function createSession(member) {
-  const payload = toBase64Url(JSON.stringify({ member, exp: Date.now() + 1000 * 60 * 60 * 24 * 180 }));
-  return `${payload}.${sign(payload)}`;
+function createSignedToken(payload) {
+  const encoded = toBase64Url(JSON.stringify(payload));
+  return `${encoded}.${sign(encoded)}`;
 }
 
-function getSessionMember(event) {
-  const authorization = event.headers?.authorization || event.headers?.Authorization || '';
-  const token = authorization.replace(/^Bearer\s+/i, '');
+function createSession(member) {
+  return createSignedToken({ member, purpose: 'session', exp: Date.now() + 1000 * 60 * 60 * 24 * 180 });
+}
+
+function readSignedToken(token) {
   const [payload, signature] = token.split('.');
   if (!payload || !signature) throw new Error('로그인이 필요합니다.');
   const expected = sign(payload);
   if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw new Error('로그인이 만료되었습니다.');
-  const session = JSON.parse(fromBase64Url(payload));
-  if (!memberNames.includes(session.member) || session.exp < Date.now()) throw new Error('로그인이 만료되었습니다.');
+  const tokenPayload = JSON.parse(fromBase64Url(payload));
+  if (!memberNames.includes(tokenPayload.member) || tokenPayload.exp < Date.now()) throw new Error('로그인이 만료되었습니다.');
+  return tokenPayload;
+}
+
+function getSessionMember(event) {
+  const authorization = event.headers?.authorization || event.headers?.Authorization || '';
+  const session = readSignedToken(authorization.replace(/^Bearer\s+/i, ''));
+  if (session.purpose !== 'session') throw new Error('로그인이 필요합니다.');
   return session.member;
+}
+
+function getEnrollmentMember(enrollmentToken) {
+  const enrollment = readSignedToken(String(enrollmentToken || ''));
+  if (enrollment.purpose !== 'passkey-enrollment' || !enrollment.tokenId) throw new Error('기기 등록 확인이 만료되었습니다.');
+  return enrollment;
+}
+
+function hashSetupPin(pin, salt) {
+  return crypto.scryptSync(pin, Buffer.from(salt, 'base64url'), 32).toString('base64url');
+}
+
+function verifySetupCode(member, code) {
+  const normalized = String(code || '').replace(/\s/g, '');
+  const pin = normalized.slice(member.length);
+  const stored = memberPinHashes[member];
+  if (!normalized.startsWith(member) || !/^\d{4}$/.test(pin) || typeof stored !== 'string') return false;
+  const [salt, expectedHash] = stored.split('.');
+  if (!salt || !expectedHash) return false;
+  const actualHash = hashSetupPin(pin, salt);
+  return actualHash.length === expectedHash.length && crypto.timingSafeEqual(Buffer.from(actualHash), Buffer.from(expectedHash));
+}
+
+async function getSetupPinGuard(member) {
+  const result = await ddb.send(new GetCommand({
+    TableName: tableName,
+    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+  }));
+  return result.Item;
+}
+
+async function recordFailedSetupPin(member) {
+  const now = Date.now();
+  const result = await ddb.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+    UpdateExpression: 'SET failedAttempts = if_not_exists(failedAttempts, :zero) + :one, lastAttemptAt = :now, expiresAt = :expiresAt',
+    ExpressionAttributeValues: { ':zero': 0, ':one': 1, ':now': now, ':expiresAt': now + 1000 * 60 * 60 },
+    ReturnValues: 'ALL_NEW',
+  }));
+  if (Number(result.Attributes?.failedAttempts || 0) < 5) return false;
+  await ddb.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+    UpdateExpression: 'SET lockedUntil = :lockedUntil, failedAttempts = :zero, expiresAt = :expiresAt',
+    ExpressionAttributeValues: {
+      ':zero': 0,
+      ':lockedUntil': now + 1000 * 60 * 30,
+      ':expiresAt': now + 1000 * 60 * 60,
+    },
+  }));
+  return true;
+}
+
+async function clearSetupPinGuard(member) {
+  await ddb.send(new DeleteCommand({
+    TableName: tableName,
+    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+  }));
 }
 
 function parseBody(event) {
@@ -132,8 +208,201 @@ async function publicRecord(record) {
 
 async function authenticate(event) {
   const { code = '' } = parseBody(event);
-  const member = memberNames.find((name) => code.replace(/\s/g, '') === `${name}${loginSuffix}`);
-  if (!member) return response(401, { message: '멤버 이름 또는 비밀번호를 확인해 주세요.' });
+  const normalized = String(code).replace(/\s/g, '');
+  const member = memberNames.find((name) => normalized.startsWith(name));
+  if (!member) return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
+  const guard = await getSetupPinGuard(member);
+  if (Number(guard?.lockedUntil || 0) > Date.now()) return response(429, { message: '보안을 위해 최초 등록을 잠시 쉬고 있어요. 30분 뒤에 다시 시도해 주세요.' });
+  if (!verifySetupCode(member, normalized)) {
+    await recordFailedSetupPin(member);
+    return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
+  }
+  await clearSetupPinGuard(member);
+
+  const existing = await ddb.send(new QueryCommand({
+    TableName: tableName,
+    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+    ExpressionAttributeValues: { ':pk': `AUTH#${member}`, ':prefix': 'PASSKEY#' },
+    Limit: 1,
+  }));
+  if ((existing.Items || []).length) return response(403, { message: '이 멤버는 이미 기기 등록을 마쳤습니다. 지문·얼굴 인증으로 로그인해 주세요.' });
+
+  const tokenId = crypto.randomUUID();
+  return response(200, {
+    member,
+    enrollmentToken: createSignedToken({
+      member,
+      purpose: 'passkey-enrollment',
+      tokenId,
+      exp: Date.now() + 1000 * 60 * 5,
+    }),
+  });
+}
+
+async function listPasskeys(member) {
+  const result = await ddb.send(new QueryCommand({
+    TableName: tableName,
+    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+    ExpressionAttributeValues: { ':pk': `AUTH#${member}`, ':prefix': 'PASSKEY#' },
+  }));
+  return result.Items || [];
+}
+
+async function createPasskeyRegistrationOptions(event) {
+  const { enrollmentToken } = parseBody(event);
+  const enrollment = getEnrollmentMember(enrollmentToken);
+  const existing = await listPasskeys(enrollment.member);
+  if (existing.length) return response(403, { message: '이미 기기 등록을 마쳤습니다. 지문·얼굴 인증으로 로그인해 주세요.' });
+
+  const options = await generateRegistrationOptions({
+    rpName: '심지회',
+    rpID: passkeyRpId,
+    userName: enrollment.member,
+    userDisplayName: `${enrollment.member} · 심지회`,
+    userID: Buffer.from(`simji:${enrollment.member}`, 'utf8'),
+    attestationType: 'none',
+    authenticatorSelection: {
+      authenticatorAttachment: 'platform',
+      residentKey: 'required',
+      userVerification: 'required',
+    },
+    supportedAlgorithmIDs: [-7, -257],
+  });
+
+  await ddb.send(new PutCommand({
+    TableName: tableName,
+    Item: {
+      pk: `AUTH#${enrollment.member}`,
+      sk: `CHALLENGE#REGISTRATION#${enrollment.tokenId}`,
+      challenge: options.challenge,
+      expiresAt: Date.now() + 1000 * 60 * 5,
+      createdAt: new Date().toISOString(),
+    },
+  }));
+  return response(200, { options });
+}
+
+async function verifyPasskeyRegistration(event) {
+  const { enrollmentToken, credential } = parseBody(event);
+  const enrollment = getEnrollmentMember(enrollmentToken);
+  const challengeKey = { pk: `AUTH#${enrollment.member}`, sk: `CHALLENGE#REGISTRATION#${enrollment.tokenId}` };
+  const stored = await ddb.send(new GetCommand({ TableName: tableName, Key: challengeKey }));
+  if (!stored.Item || stored.Item.expiresAt < Date.now()) throw new Error('기기 등록 시간이 만료되었습니다. 처음부터 다시 시도해 주세요.');
+
+  const verification = await verifyRegistrationResponse({
+    response: credential,
+    expectedChallenge: stored.Item.challenge,
+    expectedOrigin: passkeyOrigin,
+    expectedRPID: passkeyRpId,
+    requireUserVerification: true,
+    supportedAlgorithmIDs: [-7, -257],
+  });
+  if (!verification.verified || !verification.registrationInfo) throw new Error('기기 등록을 확인하지 못했습니다. 다시 시도해 주세요.');
+
+  const { credential: verifiedCredential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  const credentialId = verifiedCredential.id;
+  const now = new Date().toISOString();
+  await ddb.send(new TransactWriteCommand({
+    TransactItems: [
+      {
+        Put: {
+          TableName: tableName,
+          Item: {
+            pk: `AUTH#${enrollment.member}`,
+            sk: `PASSKEY#${credentialId}`,
+            credentialId,
+            publicKey: Buffer.from(verifiedCredential.publicKey).toString('base64url'),
+            counter: verifiedCredential.counter,
+            transports: credential.response?.transports || [],
+            deviceType: credentialDeviceType,
+            backedUp: credentialBackedUp,
+            createdAt: now,
+          },
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        },
+      },
+      {
+        Put: {
+          TableName: tableName,
+          Item: { pk: 'AUTH#INDEX', sk: `CREDENTIAL#${credentialId}`, member: enrollment.member, createdAt: now },
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        },
+      },
+      { Delete: { TableName: tableName, Key: challengeKey } },
+    ],
+  }));
+
+  return response(200, { member: enrollment.member, token: createSession(enrollment.member) });
+}
+
+async function createPasskeyAuthenticationOptions() {
+  const options = await generateAuthenticationOptions({
+    rpID: passkeyRpId,
+    allowCredentials: [],
+    userVerification: 'required',
+  });
+  const requestId = crypto.randomUUID();
+  await ddb.send(new PutCommand({
+    TableName: tableName,
+    Item: {
+      pk: 'AUTH#CHALLENGE',
+      sk: `LOGIN#${requestId}`,
+      challenge: options.challenge,
+      expiresAt: Date.now() + 1000 * 60 * 5,
+      createdAt: new Date().toISOString(),
+    },
+  }));
+  return response(200, { requestId, options });
+}
+
+async function verifyPasskeyAuthentication(event) {
+  const { requestId, credential } = parseBody(event);
+  if (!requestId || !credential?.id) throw new Error('인증 정보를 확인하지 못했습니다. 다시 시도해 주세요.');
+  const challengeKey = { pk: 'AUTH#CHALLENGE', sk: `LOGIN#${requestId}` };
+  const challenge = await ddb.send(new GetCommand({ TableName: tableName, Key: challengeKey }));
+  if (!challenge.Item || challenge.Item.expiresAt < Date.now()) throw new Error('인증 시간이 만료되었습니다. 다시 시도해 주세요.');
+
+  const index = await ddb.send(new GetCommand({
+    TableName: tableName,
+    Key: { pk: 'AUTH#INDEX', sk: `CREDENTIAL#${credential.id}` },
+  }));
+  const member = index.Item?.member;
+  if (!memberNames.includes(member)) throw new Error('등록되지 않은 기기입니다.');
+  const storedPasskey = await ddb.send(new GetCommand({
+    TableName: tableName,
+    Key: { pk: `AUTH#${member}`, sk: `PASSKEY#${credential.id}` },
+  }));
+  if (!storedPasskey.Item) throw new Error('등록되지 않은 기기입니다.');
+
+  const verification = await verifyAuthenticationResponse({
+    response: credential,
+    expectedChallenge: challenge.Item.challenge,
+    expectedOrigin: passkeyOrigin,
+    expectedRPID: passkeyRpId,
+    credential: {
+      id: storedPasskey.Item.credentialId,
+      publicKey: Buffer.from(storedPasskey.Item.publicKey, 'base64url'),
+      counter: Number(storedPasskey.Item.counter || 0),
+      transports: storedPasskey.Item.transports || [],
+    },
+    requireUserVerification: true,
+  });
+  if (!verification.verified) throw new Error('지문·얼굴 인증을 확인하지 못했습니다. 다시 시도해 주세요.');
+
+  await ddb.send(new TransactWriteCommand({
+    TransactItems: [
+      {
+        Update: {
+          TableName: tableName,
+          Key: { pk: `AUTH#${member}`, sk: `PASSKEY#${credential.id}` },
+          UpdateExpression: 'SET #counter = :counter, #lastUsedAt = :lastUsedAt',
+          ExpressionAttributeNames: { '#counter': 'counter', '#lastUsedAt': 'lastUsedAt' },
+          ExpressionAttributeValues: { ':counter': verification.authenticationInfo.newCounter, ':lastUsedAt': new Date().toISOString() },
+        },
+      },
+      { Delete: { TableName: tableName, Key: challengeKey } },
+    ],
+  }));
   return response(200, { member, token: createSession(member) });
 }
 
@@ -648,6 +917,10 @@ exports.handler = async (event) => {
   if (method === 'OPTIONS') return response(204, {});
   try {
     if (method === 'POST' && path === '/auth') return await authenticate(event);
+    if (method === 'POST' && path === '/auth/passkey/register/options') return await createPasskeyRegistrationOptions(event);
+    if (method === 'POST' && path === '/auth/passkey/register/verify') return await verifyPasskeyRegistration(event);
+    if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions();
+    if (method === 'POST' && path === '/auth/passkey/verify') return await verifyPasskeyAuthentication(event);
     const member = getSessionMember(event);
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'GET' && path === '/media') return response(200, await listMedia(event));

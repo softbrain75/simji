@@ -391,7 +391,10 @@ async function api(path, { method = 'GET', body, authenticated = true } = {}) {
   if (authenticated && token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${apiUrl}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message || '서버 요청에 실패했어요.');
+  if (!response.ok) {
+    if (authenticated && response.status === 401) signOut(false);
+    throw new Error(payload.message || '서버 요청에 실패했어요.');
+  }
   return payload;
 }
 
@@ -1666,22 +1669,141 @@ byId('memberButton').addEventListener('click', () => {
   if (window.confirm('다른 멤버로 이 기기를 사용할까요?')) signOut();
 });
 
+function base64UrlToArrayBuffer(value) {
+  const base64 = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = base64.padEnd(base64.length + ((4 - base64.length % 4) % 4), '=');
+  const binary = window.atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer;
+}
+
+function arrayBufferToBase64Url(value) {
+  const bytes = new Uint8Array(value);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function passkeyRegistrationOptions(options) {
+  return {
+    ...options,
+    challenge: base64UrlToArrayBuffer(options.challenge),
+    user: { ...options.user, id: base64UrlToArrayBuffer(options.user.id) },
+    excludeCredentials: (options.excludeCredentials || []).map((credential) => ({ ...credential, id: base64UrlToArrayBuffer(credential.id) })),
+  };
+}
+
+function passkeyAuthenticationOptions(options) {
+  return {
+    ...options,
+    challenge: base64UrlToArrayBuffer(options.challenge),
+    allowCredentials: (options.allowCredentials || []).map((credential) => ({ ...credential, id: base64UrlToArrayBuffer(credential.id) })),
+  };
+}
+
+function serializePasskeyRegistration(credential) {
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(credential.response.clientDataJSON),
+      attestationObject: arrayBufferToBase64Url(credential.response.attestationObject),
+      transports: credential.response.getTransports?.() || [],
+    },
+    clientExtensionResults: credential.getClientExtensionResults?.() || {},
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+  };
+}
+
+function serializePasskeyAuthentication(credential) {
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(credential.response.clientDataJSON),
+      authenticatorData: arrayBufferToBase64Url(credential.response.authenticatorData),
+      signature: arrayBufferToBase64Url(credential.response.signature),
+      userHandle: credential.response.userHandle ? arrayBufferToBase64Url(credential.response.userHandle) : undefined,
+    },
+    clientExtensionResults: credential.getClientExtensionResults?.() || {},
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+  };
+}
+
+function assertPasskeySupported() {
+  if (!cloudMode) throw new Error('AWS 연결 후에 지문·얼굴 인증을 사용할 수 있어요.');
+  if (!window.isSecureContext || !window.PublicKeyCredential || !navigator.credentials) throw new Error('이 기기 또는 브라우저에서는 지문·얼굴 인증을 지원하지 않아요.');
+}
+
+async function registerPasskey(enrollmentToken) {
+  const optionResult = await api('/auth/passkey/register/options', {
+    method: 'POST', body: { enrollmentToken }, authenticated: false,
+  });
+  const credential = await navigator.credentials.create({ publicKey: passkeyRegistrationOptions(optionResult.options) });
+  if (!credential) throw new Error('기기 등록을 완료하지 못했습니다. 다시 시도해 주세요.');
+  return api('/auth/passkey/register/verify', {
+    method: 'POST',
+    body: { enrollmentToken, credential: serializePasskeyRegistration(credential) },
+    authenticated: false,
+  });
+}
+
+async function loginWithPasskey() {
+  assertPasskeySupported();
+  const optionResult = await api('/auth/passkey/options', { method: 'POST', body: {}, authenticated: false });
+  const credential = await navigator.credentials.get({ publicKey: passkeyAuthenticationOptions(optionResult.options) });
+  if (!credential) throw new Error('지문·얼굴 인증을 완료하지 못했습니다. 다시 시도해 주세요.');
+  return api('/auth/passkey/verify', {
+    method: 'POST',
+    body: { requestId: optionResult.requestId, credential: serializePasskeyAuthentication(credential) },
+    authenticated: false,
+  });
+}
+
+function setLoginError(message = '') {
+  const error = byId('loginError');
+  if (message) error.textContent = message;
+  error.hidden = !message;
+}
+
 byId('loginForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const code = byId('memberCode').value.replaceAll(' ', '');
-  const localMember = members.find((name) => code === `${name}0717`);
-  if (!localMember) { byId('loginError').hidden = false; return; }
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  if (!code) { setLoginError('멤버 이름과 4자리 번호를 입력해 주세요.'); return; }
+  button.disabled = true;
+  button.textContent = '지문·얼굴 등록 준비 중…';
   try {
-    if (cloudMode) {
-      const result = await api('/auth', { method: 'POST', body: { code }, authenticated: false });
-      enterApp(result.member, result.token);
-    } else {
-      enterApp(localMember);
-    }
-    byId('loginError').hidden = true;
+    assertPasskeySupported();
+    const enrollment = await api('/auth', { method: 'POST', body: { code }, authenticated: false });
+    button.textContent = '지문·얼굴로 등록 중…';
+    const result = await registerPasskey(enrollment.enrollmentToken);
+    enterApp(result.member, result.token);
+    setLoginError();
     await loadRecords();
-  } catch {
-    byId('loginError').hidden = false;
+  } catch (error) {
+    setLoginError(error.message || '기기 등록을 완료하지 못했습니다. 다시 시도해 주세요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = '이 기기에 지문·얼굴 등록 <span>→</span>';
+  }
+});
+
+byId('passkeyLogin').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = '지문·얼굴 인증 중…';
+  try {
+    const result = await loginWithPasskey();
+    enterApp(result.member, result.token);
+    setLoginError();
+    await loadRecords();
+  } catch (error) {
+    setLoginError(error.message || '지문·얼굴 인증을 완료하지 못했습니다. 다시 시도해 주세요.');
+  } finally {
+    button.disabled = false;
+    button.textContent = '지문·얼굴로 로그인';
   }
 });
 

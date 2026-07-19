@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="icons/simji-heart-180.png?v=1" />
     <title>심지회 · 모임 통장</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
-    <link rel="stylesheet" href="styles.css?v=15" />
+    <link rel="stylesheet" href="styles.css?v=16" />
     <link rel="stylesheet" href="detail-edit.css?v=11" />
     <link rel="stylesheet" href="media.css?v=19" />
   </head>
@@ -28,12 +28,13 @@
         <h1 id="loginTitle">심지회<br />공동 장부</h1>
         <p class="login-copy">처음 한 번만 확인하면<br />이 기기에서는 계속 사용할 수 있어요.</p>
         <form class="login-form" id="loginForm">
-          <label for="memberCode">멤버 이름 + 0717</label>
-          <input id="memberCode" autocomplete="off" placeholder="예: 종남0717" required />
-          <p class="login-error" id="loginError" hidden>멤버 이름 또는 비밀번호를 확인해 주세요.</p>
-          <button type="submit">심지회 장부 열기 <span>→</span></button>
+          <label for="memberCode">멤버 이름 + 4자리 번호</label>
+          <input id="memberCode" inputmode="text" autocomplete="off" placeholder="예: 이름####" required />
+          <p class="login-error" id="loginError" hidden>멤버 이름 또는 4자리 번호를 확인해 주세요.</p>
+          <button type="submit">이 기기에 지문·얼굴 등록 <span>→</span></button>
         </form>
-        <p class="login-note">심지회 멤버 전용 기록장입니다.</p>
+        <button class="login-passkey" id="passkeyLogin" type="button">지문·얼굴로 로그인</button>
+        <p class="login-note">처음 한 번 등록하면 이후에는 이 도메인에서 지문·얼굴 인증으로만 열려요.</p>
       </div>
     </section>
 
@@ -205,6 +206,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=36"></script>
+    <script src="app.js?v=37"></script>
   </body>
 </html>

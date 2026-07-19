@@ -12,9 +12,16 @@ Parameters:
     NoEcho: true
     MinLength: 32
     Description: 로그인 세션 서명용 긴 무작위 문자열
-  LoginSuffix:
+  MemberPinHashes:
     Type: String
-    Default: '0717'
+    NoEcho: true
+    Description: 멤버별 최초 기기 등록 번호의 salted scrypt hash JSON
+  PasskeyRpId:
+    Type: String
+    Default: main.d3dh2y9z0noh47.amplifyapp.com
+  PasskeyOrigin:
+    Type: String
+    Default: https://main.d3dh2y9z0noh47.amplifyapp.com
   BedrockModelId:
     Type: String
     Default: global.amazon.nova-2-lite-v1:0
@@ -43,6 +50,9 @@ Resources:
     Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
@@ -92,7 +102,9 @@ Resources:
           BUCKET_NAME: !Ref ReceiptBucket
           ALLOWED_ORIGIN: !Ref AllowedOrigin
           SESSION_SECRET: !Ref SessionSecret
-          LOGIN_SUFFIX: !Ref LoginSuffix
+          MEMBER_PIN_HASHES: !Ref MemberPinHashes
+          PASSKEY_RP_ID: !Ref PasskeyRpId
+          PASSKEY_ORIGIN: !Ref PasskeyOrigin
           MEMBERS: 종남,인기,상훈,민철,공근,성호
           TREASURER: 성호
           BEDROCK_MODEL_ID: !Ref BedrockModelId
@@ -126,6 +138,30 @@ Resources:
           Properties:
             ApiId: !Ref SimjiApi
             Path: /auth
+            Method: POST
+        PasskeyRegistrationOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/passkey/register/options
+            Method: POST
+        PasskeyRegistrationVerify:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/passkey/register/verify
+            Method: POST
+        PasskeyAuthenticationOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/passkey/options
+            Method: POST
+        PasskeyAuthenticationVerify:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /auth/passkey/verify
             Method: POST
         Records:
           Type: HttpApi

@@ -1,6 +1,7 @@
 const byId = (id) => document.getElementById(id);
 const storageKey = 'simji-ledger-v1';
 const loginMethodStorageKey = 'simji-login-method-v1';
+const deviceMemberStorageKey = 'simji-device-member-v1';
 const openingBalance = 1340278;
 const members = ['종남', '인기', '상훈', '민철', '공근', '성호'];
 const treasurerMember = '성호';
@@ -1473,6 +1474,7 @@ async function deleteMediaItem(item, button) {
 function enterApp(member, token = '') {
   activeMember = member;
   sessionToken = token;
+  localStorage.setItem(deviceMemberStorageKey, member);
   byId('memberInitial').textContent = member.slice(0, 1);
   byId('memberName').textContent = member;
   byId('expensePerson').value = member;
@@ -1825,9 +1827,10 @@ byId('loginForm').addEventListener('submit', async (event) => {
 
 byId('pinLoginForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const member = byId('pinLoginMember').value;
+  const member = localStorage.getItem(deviceMemberStorageKey);
   const pin = byId('pinLoginCode').value.replace(/\D/g, '');
   const button = event.currentTarget.querySelector('button[type="submit"]');
+  if (!members.includes(member)) { setPinLoginError('처음에는 지문·얼굴 인증 또는 최초 등록을 해 주세요.'); return; }
   if (!/^\d{6}$/.test(pin)) { setPinLoginError('개인 PIN 6자리를 입력해 주세요.'); return; }
   button.disabled = true;
   button.textContent = 'PIN 확인 중…';
@@ -1838,7 +1841,7 @@ byId('pinLoginForm').addEventListener('submit', async (event) => {
     setPinLoginError();
     await loadRecords();
   } catch (error) {
-    setPinLoginError(error.message || '이름 또는 개인 PIN을 확인해 주세요.');
+    setPinLoginError(error.message || '개인 PIN을 확인해 주세요.');
   } finally {
     button.disabled = false;
     button.innerHTML = 'PIN으로 로그인 <span>→</span>';

@@ -860,6 +860,54 @@ function compactLocation(values, fallback = '') {
   return (unique.join(' · ') || fallback).slice(0, 120);
 }
 
+const knownKoreanLocationNames = new Map([
+  ['東京都 · 六本木', '도쿄도 · 롯폰기'],
+  ['東京都 · 西新宿', '도쿄도 · 니시신주쿠'],
+  ['東京都 · 港南', '도쿄도 · 고난'],
+  ['東京都 · 千代田', '도쿄도 · 지요다'],
+  ['東京都 · 元麻布', '도쿄도 · 모토아자부'],
+  ['東京都 · 南麻布', '도쿄도 · 미나미아자부'],
+  ['フィリピン海', '필리핀해'],
+  ['静岡県 · 八木沢', '시즈오카현 · 야기사와'],
+  ['静岡県 · 井田', '시즈오카현 · 이다'],
+  ['東京都 · 押上', '도쿄도 · 오시아게'],
+  ['東京都 · 上野公園', '도쿄도 · 우에노 공원'],
+  ['東京都 · 業平', '도쿄도 · 나리히라'],
+]);
+
+function needsKoreanLocationLocalization(value) {
+  return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(value || ''));
+}
+
+function normalizeLocalizedLocation(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/^(?:한글 표기|번역)\s*[:：]\s*/i, '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^['"`]+|['"`]+$/g, ''))
+    .find(Boolean)
+    ?.slice(0, 120) || '';
+}
+
+async function localizePhotoRegion(originalLocationName) {
+  const original = String(originalLocationName || '').trim().slice(0, 120);
+  if (!original) return '';
+  if (knownKoreanLocationNames.has(original)) return knownKoreanLocationNames.get(original);
+  if (!needsKoreanLocationLocalization(original)) return original;
+  try {
+    const prompt = `다음은 사진 GPS에서 얻은 해외 지역명입니다. 자연스러운 한글 지명 표기로만 바꾸세요. 행정구역 구분 기호 ' · '는 유지하고, 설명·따옴표·마크다운 없이 결과 한 줄만 답하세요. 새 지명이나 국가를 추측해 덧붙이지 마세요.\n\n${original}`;
+    const output = await bedrock.send(new ConverseCommand({
+      modelId,
+      messages: [{ role: 'user', content: [{ text: prompt }] }],
+      inferenceConfig: { maxTokens: 80, temperature: 0 },
+    }));
+    return normalizeLocalizedLocation(output.output.message.content.map((part) => part.text || '').join('')) || original;
+  } catch (error) {
+    console.warn('Unable to localize photo region', error.name || 'UnknownError');
+    return original;
+  }
+}
+
 async function findPhotoRegion(latitude, longitude) {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return '';
   try {
@@ -992,7 +1040,8 @@ async function savePhoto(event, member) {
   if (!image || !thumbnail) return response(400, { message: '사진을 읽지 못했어요. 다시 선택해 주세요.' });
   const normalizedLatitude = normalizeCoordinate(latitude, -90, 90);
   const normalizedLongitude = normalizeCoordinate(longitude, -180, 180);
-  const locationName = await findPhotoRegion(normalizedLatitude, normalizedLongitude);
+  const originalLocationName = await findPhotoRegion(normalizedLatitude, normalizedLongitude);
+  const locationName = await localizePhotoRegion(originalLocationName);
 
   const id = crypto.randomUUID();
   const prefix = `media/${date.slice(0, 7)}/${id}`;
@@ -1010,6 +1059,7 @@ async function savePhoto(event, member) {
     date,
     capturedAt: normalizeCapturedAt(capturedAt, date),
     locationName,
+    ...(originalLocationName && originalLocationName !== locationName ? { originalLocationName } : {}),
     caption: normalizeCaption(caption),
     person: member,
     photoKey,

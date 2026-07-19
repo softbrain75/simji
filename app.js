@@ -1307,6 +1307,28 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
   };
   reel.addEventListener('touchend', finishDrag, { passive: true });
   reel.addEventListener('touchcancel', finishDrag, { passive: true });
+  reel.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'mouse' || event.button !== 0 || state.settling) return;
+    state.startX = event.clientX;
+    state.startY = event.clientY;
+    state.delta = 0;
+    state.dragging = false;
+    reel.setPointerCapture?.(event.pointerId);
+  });
+  reel.addEventListener('pointermove', (event) => {
+    if (event.pointerType !== 'mouse' || state.settling) return;
+    const primary = axis === 'horizontal' ? event.clientX - state.startX : event.clientY - state.startY;
+    const cross = axis === 'horizontal' ? event.clientY - state.startY : event.clientX - state.startX;
+    if (!state.dragging && Math.abs(primary) < Math.abs(cross) * 1.15) return;
+    if (Math.abs(primary) < 5) return;
+    state.dragging = true;
+    state.delta = Math.max(-state.cardSize * 0.68, Math.min(state.cardSize * 0.68, primary * 0.82));
+    reel.classList.add('is-real-photo-dragging');
+    setTransform(state.initialOffset + state.delta);
+    event.preventDefault();
+  });
+  reel.addEventListener('pointerup', (event) => { if (event.pointerType === 'mouse') finishDrag(); });
+  reel.addEventListener('pointercancel', (event) => { if (event.pointerType === 'mouse') finishDrag(); });
 }
 function renderRealPhotoCarousel(item, photoUrl, axis) {
   const isLandscape = axis === 'horizontal';

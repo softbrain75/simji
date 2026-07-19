@@ -1,7 +1,6 @@
 const byId = (id) => document.getElementById(id);
 const storageKey = 'simji-ledger-v1';
-const memberStorageKey = 'simji-member-v1';
-const sessionStorageKey = 'simji-session-v1';
+const loginMethodStorageKey = 'simji-login-method-v1';
 const openingBalance = 1340278;
 const members = ['종남', '인기', '상훈', '민철', '공근', '성호'];
 const treasurerMember = '성호';
@@ -12,6 +11,7 @@ let selectedFile = null;
 let selectedIncomeFile = null;
 let activeFilter = 'all';
 let activeMember = '';
+let sessionToken = '';
 let recordsCache = [];
 let toastTimer;
 let activeView = 'ledger';
@@ -387,8 +387,7 @@ function setToday() { byId('expenseDate').value = todayInKorea(); }
 
 async function api(path, { method = 'GET', body, authenticated = true } = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  const token = localStorage.getItem(sessionStorageKey);
-  if (authenticated && token) headers.Authorization = `Bearer ${token}`;
+  if (authenticated && sessionToken) headers.Authorization = `Bearer ${sessionToken}`;
   const response = await fetch(`${apiUrl}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -1471,10 +1470,9 @@ async function deleteMediaItem(item, button) {
   }
 }
 
-function enterApp(member, sessionToken = '') {
+function enterApp(member, token = '') {
   activeMember = member;
-  localStorage.setItem(memberStorageKey, member);
-  if (sessionToken) localStorage.setItem(sessionStorageKey, sessionToken);
+  sessionToken = token;
   byId('memberInitial').textContent = member.slice(0, 1);
   byId('memberName').textContent = member;
   byId('expensePerson').value = member;
@@ -1482,14 +1480,18 @@ function enterApp(member, sessionToken = '') {
   byId('appShell').hidden = false;
 }
 function signOut(focus = true) {
-  localStorage.removeItem(memberStorageKey);
-  localStorage.removeItem(sessionStorageKey);
+  sessionToken = '';
   activeMember = '';
   byId('appShell').hidden = true;
   byId('loginScreen').hidden = false;
   byId('memberCode').value = '';
-  byId('loginError').hidden = true;
-  if (focus) byId('memberCode').focus();
+  byId('setupPin').value = '';
+  byId('setupPinConfirm').value = '';
+  byId('pinLoginCode').value = '';
+  setLoginError();
+  setPinLoginError();
+  showLoginMode(localStorage.getItem(loginMethodStorageKey) || 'passkey');
+  if (focus) window.requestAnimationFrame(() => (byId('pinLoginForm').hidden ? byId('passkeyLogin') : byId('pinLoginCode')).focus());
 }
 
 byId('openExpense').addEventListener('click', openExpense);
@@ -1736,9 +1738,9 @@ function assertPasskeySupported() {
   if (!window.isSecureContext || !window.PublicKeyCredential || !navigator.credentials) throw new Error('이 기기 또는 브라우저에서는 지문·얼굴 인증을 지원하지 않아요.');
 }
 
-async function registerPasskey(enrollmentToken) {
+async function registerPasskey(enrollmentToken, pin) {
   const optionResult = await api('/auth/passkey/register/options', {
-    method: 'POST', body: { enrollmentToken }, authenticated: false,
+    method: 'POST', body: { enrollmentToken, pin }, authenticated: false,
   });
   const credential = await navigator.credentials.create({ publicKey: passkeyRegistrationOptions(optionResult.options) });
   if (!credential) throw new Error('기기 등록을 완료하지 못했습니다. 다시 시도해 주세요.');
@@ -1767,19 +1769,40 @@ function setLoginError(message = '') {
   error.hidden = !message;
 }
 
+function setPinLoginError(message = '') {
+  const error = byId('pinLoginError');
+  if (message) error.textContent = message;
+  error.hidden = !message;
+}
+
+function showLoginMode(mode = 'passkey') {
+  const selectedMode = ['passkey', 'pin', 'setup'].includes(mode) ? mode : 'passkey';
+  byId('loginActions').hidden = selectedMode !== 'passkey';
+  byId('loginForm').hidden = selectedMode !== 'setup';
+  byId('pinLoginForm').hidden = selectedMode !== 'pin';
+  byId('loginNote').hidden = selectedMode === 'setup';
+  setLoginError();
+  setPinLoginError();
+}
+
 byId('loginForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const code = byId('memberCode').value.replaceAll(' ', '');
+  const pin = byId('setupPin').value.replace(/\D/g, '');
+  const confirmation = byId('setupPinConfirm').value.replace(/\D/g, '');
   const button = event.currentTarget.querySelector('button[type="submit"]');
-  if (!code) { setLoginError('멤버 이름과 4자리 번호를 입력해 주세요.'); return; }
+  if (!code) { setLoginError('멤버 이름과 최초 등록번호를 입력해 주세요.'); return; }
+  if (!/^\d{6}$/.test(pin)) { setLoginError('개인 PIN은 숫자 6자리로 정해 주세요.'); return; }
+  if (pin !== confirmation) { setLoginError('PIN 두 번 입력한 값이 같지 않아요.'); return; }
   button.disabled = true;
   button.textContent = '지문·얼굴 등록 준비 중…';
   try {
     assertPasskeySupported();
     const enrollment = await api('/auth', { method: 'POST', body: { code }, authenticated: false });
     button.textContent = '지문·얼굴로 등록 중…';
-    const result = await registerPasskey(enrollment.enrollmentToken);
+    const result = await registerPasskey(enrollment.enrollmentToken, pin);
     enterApp(result.member, result.token);
+    localStorage.setItem(loginMethodStorageKey, 'passkey');
     setLoginError();
     await loadRecords();
   } catch (error) {
@@ -1790,6 +1813,28 @@ byId('loginForm').addEventListener('submit', async (event) => {
   }
 });
 
+byId('pinLoginForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const member = byId('pinLoginMember').value;
+  const pin = byId('pinLoginCode').value.replace(/\D/g, '');
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  if (!/^\d{6}$/.test(pin)) { setPinLoginError('개인 PIN 6자리를 입력해 주세요.'); return; }
+  button.disabled = true;
+  button.textContent = 'PIN 확인 중…';
+  try {
+    const result = await api('/auth/pin', { method: 'POST', body: { member, pin }, authenticated: false });
+    enterApp(result.member, result.token);
+    localStorage.setItem(loginMethodStorageKey, 'pin');
+    setPinLoginError();
+    await loadRecords();
+  } catch (error) {
+    setPinLoginError(error.message || '이름 또는 개인 PIN을 확인해 주세요.');
+  } finally {
+    button.disabled = false;
+    button.innerHTML = 'PIN으로 로그인 <span>→</span>';
+  }
+});
+
 byId('passkeyLogin').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -1797,6 +1842,7 @@ byId('passkeyLogin').addEventListener('click', async (event) => {
   try {
     const result = await loginWithPasskey();
     enterApp(result.member, result.token);
+    localStorage.setItem(loginMethodStorageKey, 'passkey');
     setLoginError();
     await loadRecords();
   } catch (error) {
@@ -1807,14 +1853,16 @@ byId('passkeyLogin').addEventListener('click', async (event) => {
   }
 });
 
+byId('openPinLogin').addEventListener('click', () => showLoginMode('pin'));
+byId('openSetup').addEventListener('click', () => showLoginMode('setup'));
+byId('cancelSetup').addEventListener('click', () => showLoginMode(localStorage.getItem(loginMethodStorageKey) || 'passkey'));
+byId('cancelPinLogin').addEventListener('click', () => showLoginMode('passkey'));
+
 byId('monthLabel').textContent = `${new Date().getFullYear()}년 ${new Date().getMonth() + 1}월`;
 document.body.classList.toggle('cloud-mode', cloudMode);
 if (cloudMode) byId('saveExpenseButton').innerHTML = '영수증 읽고 자동 저장 <span>→</span>';
 setToday();
 enableAmountCommas(byId('expenseValue'));
-const savedMember = localStorage.getItem(memberStorageKey);
-const savedToken = localStorage.getItem(sessionStorageKey);
-if (members.includes(savedMember) && (!cloudMode || savedToken)) {
-  enterApp(savedMember);
-  loadRecords();
-}
+localStorage.removeItem('simji-member-v1');
+localStorage.removeItem('simji-session-v1');
+showLoginMode(localStorage.getItem(loginMethodStorageKey) || 'passkey');

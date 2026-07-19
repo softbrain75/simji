@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="icons/simji-heart-180.png?v=1" />
     <title>심지회 · 모임 통장</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" />
-    <link rel="stylesheet" href="styles.css?v=16" />
+    <link rel="stylesheet" href="styles.css?v=17" />
     <link rel="stylesheet" href="detail-edit.css?v=11" />
     <link rel="stylesheet" href="media.css?v=19" />
   </head>
@@ -26,15 +26,36 @@
         <span class="login-mark">心</span>
         <p class="login-eyebrow">SIMJI CLUB</p>
         <h1 id="loginTitle">심지회<br />공동 장부</h1>
-        <p class="login-copy">처음 한 번만 확인하면<br />이 기기에서는 계속 사용할 수 있어요.</p>
-        <form class="login-form" id="loginForm">
-          <label for="memberCode">멤버 이름 + 4자리 번호</label>
-          <input id="memberCode" inputmode="text" autocomplete="off" placeholder="예: 이름####" required />
-          <p class="login-error" id="loginError" hidden>멤버 이름 또는 4자리 번호를 확인해 주세요.</p>
-          <button type="submit">이 기기에 지문·얼굴 등록 <span>→</span></button>
+        <p class="login-copy">앱을 열 때마다 안전하게 인증해요.<br />지문·얼굴 또는 내가 정한 PIN을 사용할 수 있어요.</p>
+        <div class="login-actions" id="loginActions">
+          <button class="login-passkey" id="passkeyLogin" type="button">지문·얼굴로 로그인</button>
+          <button class="login-alt" id="openPinLogin" type="button">PIN으로 로그인</button>
+          <button class="login-text-button" id="openSetup" type="button">처음 등록하기</button>
+        </div>
+        <form class="login-form" id="loginForm" hidden>
+          <label for="memberCode">최초 등록 · 멤버 이름 + 0717</label>
+          <input id="memberCode" inputmode="text" autocomplete="off" placeholder="예: 이름0717" required />
+          <label for="setupPin">내가 사용할 PIN 6자리</label>
+          <input id="setupPin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="숫자 6자리" required />
+          <label for="setupPinConfirm">PIN 다시 입력</label>
+          <input id="setupPinConfirm" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="숫자 6자리" required />
+          <p class="login-error" id="loginError" hidden>입력 내용을 확인해 주세요.</p>
+          <button type="submit">지문·얼굴과 PIN 등록 <span>→</span></button>
+          <button class="login-back" id="cancelSetup" type="button">돌아가기</button>
         </form>
-        <button class="login-passkey" id="passkeyLogin" type="button">지문·얼굴로 로그인</button>
-        <p class="login-note">처음 한 번 등록하면 이후에는 이 도메인에서 지문·얼굴 인증으로만 열려요.</p>
+        <form class="login-form" id="pinLoginForm" hidden>
+          <label for="pinLoginMember">멤버 이름</label>
+          <select id="pinLoginMember" required>
+            <option value="종남">종남</option><option value="인기">인기</option><option value="상훈">상훈</option>
+            <option value="민철">민철</option><option value="공근">공근</option><option value="성호">성호</option>
+          </select>
+          <label for="pinLoginCode">내 PIN 6자리</label>
+          <input id="pinLoginCode" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6" placeholder="숫자 6자리" required />
+          <p class="login-error" id="pinLoginError" hidden>이름 또는 개인 PIN을 확인해 주세요.</p>
+          <button type="submit">PIN으로 로그인 <span>→</span></button>
+          <button class="login-back" id="cancelPinLogin" type="button">돌아가기</button>
+        </form>
+        <p class="login-note" id="loginNote">기기와 로그인 정보는 저장하지 않습니다.</p>
       </div>
     </section>
 
@@ -206,6 +227,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=37"></script>
+    <script src="app.js?v=38"></script>
   </body>
 </html>

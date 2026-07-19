@@ -79,7 +79,7 @@ function getEnrollmentMember(enrollmentToken) {
   return enrollment;
 }
 
-function hashSetupPin(pin, salt) {
+function hashPin(pin, salt) {
   return crypto.scryptSync(pin, Buffer.from(salt, 'base64url'), 32).toString('base64url');
 }
 
@@ -90,23 +90,42 @@ function verifySetupCode(member, code) {
   if (!normalized.startsWith(member) || !/^\d{4}$/.test(pin) || typeof stored !== 'string') return false;
   const [salt, expectedHash] = stored.split('.');
   if (!salt || !expectedHash) return false;
-  const actualHash = hashSetupPin(pin, salt);
+  const actualHash = hashPin(pin, salt);
   return actualHash.length === expectedHash.length && crypto.timingSafeEqual(Buffer.from(actualHash), Buffer.from(expectedHash));
 }
 
-async function getSetupPinGuard(member) {
+function normalizePersonalPin(value) {
+  const pin = String(value || '').replace(/\D/g, '');
+  if (!/^\d{6}$/.test(pin)) throw new Error('개인 PIN은 숫자 6자리로 정해 주세요.');
+  return pin;
+}
+
+function createPersonalPinSecret(pin) {
+  const salt = crypto.randomBytes(16).toString('base64url');
+  return { salt, hash: hashPin(pin, salt) };
+}
+
+async function getPersonalPinSecret(member) {
   const result = await ddb.send(new GetCommand({
     TableName: tableName,
-    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+    Key: { pk: `AUTH#${member}`, sk: 'LOGIN_PIN' },
   }));
   return result.Item;
 }
 
-async function recordFailedSetupPin(member) {
+async function getPinGuard(member, guardKey) {
+  const result = await ddb.send(new GetCommand({
+    TableName: tableName,
+    Key: { pk: `AUTH#${member}`, sk: guardKey },
+  }));
+  return result.Item;
+}
+
+async function recordFailedPin(member, guardKey) {
   const now = Date.now();
   const result = await ddb.send(new UpdateCommand({
     TableName: tableName,
-    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+    Key: { pk: `AUTH#${member}`, sk: guardKey },
     UpdateExpression: 'SET failedAttempts = if_not_exists(failedAttempts, :zero) + :one, lastAttemptAt = :now, expiresAt = :expiresAt',
     ExpressionAttributeValues: { ':zero': 0, ':one': 1, ':now': now, ':expiresAt': now + 1000 * 60 * 60 },
     ReturnValues: 'ALL_NEW',
@@ -114,7 +133,7 @@ async function recordFailedSetupPin(member) {
   if (Number(result.Attributes?.failedAttempts || 0) < 5) return false;
   await ddb.send(new UpdateCommand({
     TableName: tableName,
-    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+    Key: { pk: `AUTH#${member}`, sk: guardKey },
     UpdateExpression: 'SET lockedUntil = :lockedUntil, failedAttempts = :zero, expiresAt = :expiresAt',
     ExpressionAttributeValues: {
       ':zero': 0,
@@ -125,10 +144,10 @@ async function recordFailedSetupPin(member) {
   return true;
 }
 
-async function clearSetupPinGuard(member) {
+async function clearPinGuard(member, guardKey) {
   await ddb.send(new DeleteCommand({
     TableName: tableName,
-    Key: { pk: `AUTH#${member}`, sk: 'PIN_GUARD' },
+    Key: { pk: `AUTH#${member}`, sk: guardKey },
   }));
 }
 
@@ -211,13 +230,13 @@ async function authenticate(event) {
   const normalized = String(code).replace(/\s/g, '');
   const member = memberNames.find((name) => normalized.startsWith(name));
   if (!member) return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
-  const guard = await getSetupPinGuard(member);
+  const guard = await getPinGuard(member, 'SETUP_GUARD');
   if (Number(guard?.lockedUntil || 0) > Date.now()) return response(429, { message: '보안을 위해 최초 등록을 잠시 쉬고 있어요. 30분 뒤에 다시 시도해 주세요.' });
   if (!verifySetupCode(member, normalized)) {
-    await recordFailedSetupPin(member);
+    await recordFailedPin(member, 'SETUP_GUARD');
     return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
   }
-  await clearSetupPinGuard(member);
+  await clearPinGuard(member, 'SETUP_GUARD');
 
   const existing = await ddb.send(new QueryCommand({
     TableName: tableName,
@@ -239,6 +258,25 @@ async function authenticate(event) {
   });
 }
 
+async function authenticateWithPersonalPin(event) {
+  const { member = '', pin = '' } = parseBody(event);
+  if (!memberNames.includes(member)) return response(401, { message: '이름 또는 개인 PIN을 확인해 주세요.' });
+  const guard = await getPinGuard(member, 'LOGIN_PIN_GUARD');
+  if (Number(guard?.lockedUntil || 0) > Date.now()) return response(429, { message: '보안을 위해 PIN 로그인을 잠시 쉬고 있어요. 30분 뒤에 다시 시도해 주세요.' });
+
+  const secret = await getPersonalPinSecret(member);
+  const normalizedPin = String(pin || '').replace(/\D/g, '');
+  const isValid = secret && /^\d{6}$/.test(normalizedPin)
+    && hashPin(normalizedPin, secret.salt).length === secret.hash.length
+    && crypto.timingSafeEqual(Buffer.from(hashPin(normalizedPin, secret.salt)), Buffer.from(secret.hash));
+  if (!isValid) {
+    await recordFailedPin(member, 'LOGIN_PIN_GUARD');
+    return response(401, { message: '이름 또는 개인 PIN을 확인해 주세요.' });
+  }
+  await clearPinGuard(member, 'LOGIN_PIN_GUARD');
+  return response(200, { member, token: createSession(member) });
+}
+
 async function listPasskeys(member) {
   const result = await ddb.send(new QueryCommand({
     TableName: tableName,
@@ -249,8 +287,9 @@ async function listPasskeys(member) {
 }
 
 async function createPasskeyRegistrationOptions(event) {
-  const { enrollmentToken } = parseBody(event);
+  const { enrollmentToken, pin } = parseBody(event);
   const enrollment = getEnrollmentMember(enrollmentToken);
+  const personalPin = normalizePersonalPin(pin);
   const existing = await listPasskeys(enrollment.member);
   if (existing.length) return response(403, { message: '이미 기기 등록을 마쳤습니다. 지문·얼굴 인증으로 로그인해 주세요.' });
 
@@ -275,6 +314,7 @@ async function createPasskeyRegistrationOptions(event) {
       pk: `AUTH#${enrollment.member}`,
       sk: `CHALLENGE#REGISTRATION#${enrollment.tokenId}`,
       challenge: options.challenge,
+      personalPin: createPersonalPinSecret(personalPin),
       expiresAt: Date.now() + 1000 * 60 * 5,
       createdAt: new Date().toISOString(),
     },
@@ -302,6 +342,7 @@ async function verifyPasskeyRegistration(event) {
   const { credential: verifiedCredential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
   const credentialId = verifiedCredential.id;
   const now = new Date().toISOString();
+  if (!stored.Item.personalPin?.salt || !stored.Item.personalPin?.hash) throw new Error('개인 PIN 설정을 확인하지 못했습니다. 처음부터 다시 시도해 주세요.');
   await ddb.send(new TransactWriteCommand({
     TransactItems: [
       {
@@ -325,6 +366,19 @@ async function verifyPasskeyRegistration(event) {
         Put: {
           TableName: tableName,
           Item: { pk: 'AUTH#INDEX', sk: `CREDENTIAL#${credentialId}`, member: enrollment.member, createdAt: now },
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        },
+      },
+      {
+        Put: {
+          TableName: tableName,
+          Item: {
+            pk: `AUTH#${enrollment.member}`,
+            sk: 'LOGIN_PIN',
+            salt: stored.Item.personalPin.salt,
+            hash: stored.Item.personalPin.hash,
+            updatedAt: now,
+          },
           ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
         },
       },
@@ -917,6 +971,7 @@ exports.handler = async (event) => {
   if (method === 'OPTIONS') return response(204, {});
   try {
     if (method === 'POST' && path === '/auth') return await authenticate(event);
+    if (method === 'POST' && path === '/auth/pin') return await authenticateWithPersonalPin(event);
     if (method === 'POST' && path === '/auth/passkey/register/options') return await createPasskeyRegistrationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/register/verify') return await verifyPasskeyRegistration(event);
     if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions();

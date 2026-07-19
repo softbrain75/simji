@@ -585,6 +585,237 @@ async function listRecords() {
   return Promise.all((result.Items || []).map(publicRecord));
 }
 
+const assistantOpeningBalance = 1340278;
+
+function assistantLimit(value, fallback = 10, maximum = 18) {
+  const number = Number(value);
+  return Number.isInteger(number) ? Math.min(Math.max(number, 1), maximum) : fallback;
+}
+
+function assistantMonth(value) {
+  return /^20\d{2}-(0[1-9]|1[0-2])$/.test(String(value || '')) ? String(value) : '';
+}
+
+function assistantDate(value) {
+  return isValidDate(String(value || '')) ? String(value) : '';
+}
+
+function assistantRecordView(record, includeAccount = false) {
+  const view = {
+    id: record.id,
+    type: record.type,
+    amount: Number(record.amount || 0),
+    date: record.date,
+    memo: record.memo || (record.type === 'income' ? '회비 입금' : '영수증 지출'),
+    person: record.person || '',
+  };
+  if (record.type === 'expense') {
+    view.paymentStatus = record.paymentStatus || 'pending';
+    view.paymentDate = record.paymentDate || '';
+    if (includeAccount) {
+      view.refundBank = record.refundBank || '';
+      view.refundAccount = record.refundAccount || '';
+    }
+  }
+  return view;
+}
+
+async function listAssistantRecords() {
+  const result = await ddb.send(new QueryCommand({
+    TableName: tableName,
+    KeyConditionExpression: 'pk = :pk',
+    ExpressionAttributeValues: { ':pk': 'SIMJI' },
+    ScanIndexForward: false,
+    Limit: 150,
+  }));
+  return (result.Items || []).sort((first, second) => `${second.date || ''}${second.createdAt || ''}`.localeCompare(`${first.date || ''}${first.createdAt || ''}`));
+}
+
+function filterAssistantRecords(records, input = {}) {
+  const member = memberNames.includes(String(input.member || '').trim()) ? String(input.member).trim() : '';
+  const type = ['income', 'expense'].includes(input.type) ? input.type : '';
+  const month = assistantMonth(input.month);
+  const date = assistantDate(input.date);
+  const keyword = String(input.keyword || '').trim().toLowerCase().slice(0, 60);
+  return records.filter((record) => {
+    if (member && record.person !== member) return false;
+    if (type && record.type !== type) return false;
+    if (date && record.date !== date) return false;
+    if (!date && month && !String(record.date || '').startsWith(month)) return false;
+    if (keyword && !`${record.memo || ''} ${record.person || ''}`.toLowerCase().includes(keyword)) return false;
+    return true;
+  });
+}
+
+async function listAssistantMedia() {
+  const items = [];
+  let startKey;
+  do {
+    const result = await ddb.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: 'pk = :pk',
+      ExpressionAttributeValues: { ':pk': 'SIMJI_MEDIA' },
+      ScanIndexForward: false,
+      Limit: 100,
+      ExclusiveStartKey: startKey,
+    }));
+    items.push(...(result.Items || []));
+    startKey = result.LastEvaluatedKey;
+  } while (startKey && items.length < 120);
+  return items.sort((first, second) => `${second.date || ''}${second.createdAt || ''}`.localeCompare(`${first.date || ''}${first.createdAt || ''}`)).slice(0, 120);
+}
+
+function assistantToolDefinitions() {
+  return [
+    {
+      toolSpec: {
+        name: 'get_group_summary',
+        description: 'Get the group balance and income/expense summary. Use this for balance, monthly total, or a general ledger summary.',
+        inputSchema: { json: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM. Omit for the current month.' } } } },
+      },
+    },
+    {
+      toolSpec: {
+        name: 'search_transactions',
+        description: 'Find ledger transactions by member, type, date or keyword. Use this before naming exact amounts or transactions.',
+        inputSchema: { json: { type: 'object', properties: {
+          member: { type: 'string', enum: memberNames },
+          type: { type: 'string', enum: ['income', 'expense'] },
+          month: { type: 'string', description: 'YYYY-MM' },
+          date: { type: 'string', description: 'YYYY-MM-DD' },
+          keyword: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 18 },
+        } } },
+      },
+    },
+    {
+      toolSpec: {
+        name: 'get_pending_reimbursements',
+        description: 'Get expense reimbursements that the treasurer still needs to send. Account numbers are only available to the treasurer.',
+        inputSchema: { json: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 18 } } } },
+      },
+    },
+    {
+      toolSpec: {
+        name: 'search_media',
+        description: 'Find shared photos or YouTube videos by date, month, location, or media type. Use this for photo or video questions.',
+        inputSchema: { json: { type: 'object', properties: {
+          mediaType: { type: 'string', enum: ['photo', 'video'] },
+          month: { type: 'string', description: 'YYYY-MM' },
+          date: { type: 'string', description: 'YYYY-MM-DD' },
+          location: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 18 },
+        } } },
+      },
+    },
+  ];
+}
+
+async function runAssistantTool(name, input, member) {
+  if (name === 'get_group_summary') {
+    const records = await listAssistantRecords();
+    const month = assistantMonth(input.month) || todayInKorea().slice(0, 7);
+    const allIncome = records.filter((record) => record.type === 'income').reduce((sum, record) => sum + Number(record.amount || 0), 0);
+    const allExpense = records.filter((record) => record.type === 'expense').reduce((sum, record) => sum + Number(record.amount || 0), 0);
+    const monthly = filterAssistantRecords(records, { month });
+    const income = monthly.filter((record) => record.type === 'income').reduce((sum, record) => sum + Number(record.amount || 0), 0);
+    const expense = monthly.filter((record) => record.type === 'expense').reduce((sum, record) => sum + Number(record.amount || 0), 0);
+    const recent = monthly.slice(0, 5).map((record) => assistantRecordView(record));
+    return {
+      modelResult: { month, balance: assistantOpeningBalance + allIncome - allExpense, monthlyIncome: income, monthlyExpense: expense, transactionCount: monthly.length, recent },
+      cards: { records: recent },
+    };
+  }
+
+  if (name === 'search_transactions') {
+    const records = filterAssistantRecords(await listAssistantRecords(), input).slice(0, assistantLimit(input.limit));
+    const cards = records.map((record) => assistantRecordView(record));
+    return { modelResult: { count: cards.length, transactions: cards }, cards: { records: cards } };
+  }
+
+  if (name === 'get_pending_reimbursements') {
+    if (member !== treasurerMember) {
+      return { modelResult: { allowed: false, message: '송금대기 계좌 목록은 통장 담당자 성호만 확인할 수 있습니다.' }, cards: {} };
+    }
+    const records = (await listAssistantRecords())
+      .filter((record) => record.type === 'expense' && record.paymentStatus !== 'paid')
+      .slice(0, assistantLimit(input.limit));
+    const cards = records.map((record) => assistantRecordView(record, true));
+    return {
+      modelResult: { allowed: true, count: cards.length, totalAmount: cards.reduce((sum, record) => sum + record.amount, 0), reimbursements: cards },
+      cards: { records: cards },
+    };
+  }
+
+  if (name === 'search_media') {
+    const month = assistantMonth(input.month);
+    const date = assistantDate(input.date);
+    const location = String(input.location || '').trim().toLowerCase().slice(0, 60);
+    const mediaType = ['photo', 'video'].includes(input.mediaType) ? input.mediaType : '';
+    const records = (await listAssistantMedia()).filter((record) => {
+      if (mediaType && record.mediaType !== mediaType) return false;
+      if (date && record.date !== date) return false;
+      if (!date && month && !String(record.date || '').startsWith(month)) return false;
+      if (location && !String(record.locationName || '').toLowerCase().includes(location)) return false;
+      return true;
+    }).slice(0, assistantLimit(input.limit));
+    const cards = await Promise.all(records.map((record) => publicMediaItem(record)));
+    return {
+      modelResult: { count: cards.length, media: cards.map((item) => ({ id: item.id, mediaType: item.mediaType, date: item.date, locationName: item.locationName || '' })) },
+      cards: { media: cards },
+    };
+  }
+
+  return { modelResult: { message: 'Unsupported tool.' }, cards: {} };
+}
+
+function assistantText(message) {
+  return (message?.content || []).filter((part) => typeof part.text === 'string').map((part) => part.text).join('').trim();
+}
+
+async function askAssistant(event, member) {
+  const { message: rawMessage = '' } = parseBody(event);
+  const message = String(rawMessage || '').trim().slice(0, 500);
+  if (!message) return response(400, { message: '질문을 입력해 주세요.' });
+
+  const messages = [{ role: 'user', content: [{ text: message }] }];
+  const cards = { records: [], media: [] };
+  let answer = '';
+  const system = [{ text: `You are 심지 도우미 for a private Korean friends group ledger. Today in Korea is ${todayInKorea()}. Reply in Korean, briefly and warmly. For exact ledger, reimbursement, photo, or video facts, call the appropriate tool before answering. Never invent amounts, dates, locations, or records. The logged-in member is ${member}. This first release is read-only: if asked to create, edit, delete, or send money, explain that it will be added later and do not claim an action was done. Do not reveal reimbursement account numbers unless the logged-in member is ${treasurerMember}.` }];
+
+  for (let round = 0; round < 3; round += 1) {
+    const result = await bedrock.send(new ConverseCommand({
+      modelId,
+      system,
+      messages,
+      toolConfig: { tools: assistantToolDefinitions() },
+      inferenceConfig: { maxTokens: 420, temperature: 0.2 },
+    }));
+    const output = result.output?.message;
+    const toolUses = (output?.content || []).map((part) => part.toolUse).filter(Boolean);
+    if (!toolUses.length) {
+      answer = assistantText(output);
+      break;
+    }
+    messages.push({ role: 'assistant', content: output.content });
+    const toolResults = [];
+    for (const toolUse of toolUses) {
+      const tool = await runAssistantTool(toolUse.name, toolUse.input || {}, member);
+      cards.records.push(...(tool.cards.records || []));
+      cards.media.push(...(tool.cards.media || []));
+      toolResults.push({ toolResult: { toolUseId: toolUse.toolUseId, content: [{ json: tool.modelResult }] } });
+    }
+    messages.push({ role: 'user', content: toolResults });
+  }
+
+  const unique = (items) => [...new Map(items.map((item) => [item.id, item])).values()];
+  return response(200, {
+    answer: answer || '찾은 내용을 아래에 정리했어요.',
+    records: unique(cards.records).slice(0, 18),
+    media: unique(cards.media).slice(0, 18),
+  });
+}
+
 function encodeCursor(key) {
   return key ? Buffer.from(JSON.stringify(key)).toString('base64url') : undefined;
 }
@@ -1094,6 +1325,7 @@ exports.handler = async (event) => {
     if (method === 'POST' && path === '/auth/passkey/options') return await createPasskeyAuthenticationOptions(event);
     if (method === 'POST' && path === '/auth/passkey/verify') return await verifyPasskeyAuthentication(event);
     const member = getSessionMember(event);
+    if (method === 'POST' && path === '/assistant') return await askAssistant(event, member);
     if (method === 'GET' && path === '/records') return response(200, { records: await listRecords(member) });
     if (method === 'GET' && path === '/media') return response(200, await listMedia(event));
     if (method === 'GET' && /^\/media\/[^/]+$/.test(path)) return await getMedia(event);

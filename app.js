@@ -38,6 +38,8 @@ let mediaObserver;
 let serviceWorkerRegistration;
 let serviceWorkerReloading = false;
 let pendingAppUpdate = false;
+let assistantMessages = [];
+let assistantBusy = false;
 
 function hasOpenModal() {
   return Array.from(document.querySelectorAll('.modal-backdrop')).some((backdrop) => !backdrop.hidden);
@@ -431,6 +433,106 @@ function setActiveView(view) {
   if (isMedia) {
     renderMedia();
     if (!mediaItems.length && !mediaLoading) loadMedia({ reset: true });
+  }
+}
+
+function assistantTextMarkup(text) {
+  return escapeHtml(text || '').replace(/\n/g, '<br />');
+}
+
+function assistantRecordMarkup(record) {
+  const direction = record.type === 'income' ? '+' : '−';
+  const type = record.type === 'income' ? '입금' : '지출';
+  const status = record.type === 'expense' && record.paymentStatus
+    ? `<span class="assistant-card__status is-${escapeHtml(record.paymentStatus)}">${record.paymentStatus === 'paid' ? '입금 완료' : '송금 대기'}</span>`
+    : '';
+  const account = record.refundBank && record.refundAccount
+    ? `<span class="assistant-card__account">${escapeHtml(`${record.refundBank} ${record.refundAccount}`)}</span>`
+    : '';
+  return `<button class="assistant-card assistant-card--record" type="button" data-assistant-record-id="${escapeHtml(record.id)}"><span class="assistant-card__type">${type}</span><span class="assistant-card__main"><b>${escapeHtml(record.memo || (record.type === 'income' ? '회비 입금' : '영수증 지출'))}</b><small>${escapeHtml(record.person || '등록자 확인 필요')} · ${formatDate(record.date)}</small>${status}${account}</span><strong class="assistant-card__amount is-${record.type}">${direction}${formatMoney(record.amount)}</strong></button>`;
+}
+
+function assistantMediaMarkup(item) {
+  const label = item.mediaType === 'video' ? 'YouTube 영상' : '사진';
+  const location = item.locationName ? ` · ${escapeHtml(item.locationName)}` : '';
+  return `<button class="assistant-card assistant-card--media" type="button" data-assistant-media-id="${escapeHtml(item.id)}"><img src="${escapeHtml(item.thumbnailUrl)}" alt="${label}" /><span class="assistant-card__main"><b>${label}</b><small>${formatDate(item.date)}${location}</small></span><i>${item.mediaType === 'video' ? '▶' : '›'}</i></button>`;
+}
+
+function renderAssistantMessages() {
+  const container = byId('assistantMessages');
+  if (!assistantMessages.length) {
+    container.innerHTML = '<div class="assistant-welcome"><span>✦</span><b>무엇을 찾아볼까요?</b><p>예: 이번 달 지출 요약, 송금할 목록, 4월 사진</p></div>';
+    return;
+  }
+  container.innerHTML = assistantMessages.map((message) => {
+    if (message.pending) return '<div class="assistant-message assistant-message--assistant is-loading"><span></span><span></span><span></span></div>';
+    const cards = [
+      ...(message.records || []).map(assistantRecordMarkup),
+      ...(message.media || []).map(assistantMediaMarkup),
+    ].join('');
+    return `<div class="assistant-message assistant-message--${message.role}"><div class="assistant-message__text">${assistantTextMarkup(message.text)}</div>${cards ? `<div class="assistant-cards">${cards}</div>` : ''}</div>`;
+  }).join('');
+  container.scrollTop = container.scrollHeight;
+}
+
+function openAssistant() {
+  if (!cloudMode) { showToast('심지 도우미는 AWS 연결 후 사용할 수 있어요.'); return; }
+  byId('assistantBackdrop').hidden = false;
+  renderAssistantMessages();
+  window.requestAnimationFrame(() => byId('assistantInput').focus());
+}
+
+function closeAssistant() {
+  byId('assistantBackdrop').hidden = true;
+  applyPendingAppUpdate();
+}
+
+async function openAssistantRecord(id) {
+  let record = recordsCache.find((item) => item.id === id);
+  if (!record) {
+    await loadRecords();
+    record = recordsCache.find((item) => item.id === id);
+  }
+  if (!record) { showToast('거래내역을 찾지 못했어요.'); return; }
+  closeAssistant();
+  setActiveView('ledger');
+  openDetail(record);
+}
+
+function assistantMediaById(id) {
+  return assistantMessages.flatMap((message) => message.media || []).find((item) => item.id === id);
+}
+
+async function openAssistantMedia(id) {
+  const item = assistantMediaById(id);
+  if (!item) { showToast('사진·영상을 찾지 못했어요.'); return; }
+  closeAssistant();
+  setActiveView('media');
+  if (!mediaItems.some((entry) => entry.id === item.id)) mediaItems = [item, ...mediaItems];
+  await openMediaDetail(item);
+}
+
+async function submitAssistantQuestion(question) {
+  const text = String(question || '').trim();
+  if (!text || assistantBusy) return;
+  assistantMessages.push({ role: 'user', text });
+  assistantMessages.push({ role: 'assistant', text: '', pending: true });
+  assistantBusy = true;
+  byId('assistantSend').disabled = true;
+  byId('assistantInput').value = '';
+  renderAssistantMessages();
+  try {
+    const result = await api('/assistant', { method: 'POST', body: { message: text } });
+    assistantMessages = assistantMessages.filter((message) => !message.pending);
+    assistantMessages.push({ role: 'assistant', text: result.answer || '찾은 내용을 정리했어요.', records: result.records || [], media: result.media || [] });
+  } catch (error) {
+    assistantMessages = assistantMessages.filter((message) => !message.pending);
+    assistantMessages.push({ role: 'assistant', text: error.message || '심지 도우미가 지금 답하지 못했어요. 다시 시도해 주세요.' });
+  } finally {
+    assistantBusy = false;
+    byId('assistantSend').disabled = false;
+    renderAssistantMessages();
+    byId('assistantInput').focus();
   }
 }
 
@@ -1528,6 +1630,22 @@ byId('closeDetail').addEventListener('click', closeDetail);
 byId('openMedia').addEventListener('click', openMedia);
 byId('closeMedia').addEventListener('click', closeMedia);
 byId('closeMediaDetail').addEventListener('click', closeMediaDetail);
+byId('openAssistant').addEventListener('click', openAssistant);
+byId('closeAssistant').addEventListener('click', closeAssistant);
+byId('assistantForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  submitAssistantQuestion(byId('assistantInput').value);
+});
+byId('assistantQuick').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-assistant-question]');
+  if (button) submitAssistantQuestion(button.dataset.assistantQuestion);
+});
+byId('assistantMessages').addEventListener('click', (event) => {
+  const record = event.target.closest('[data-assistant-record-id]');
+  if (record) { openAssistantRecord(record.dataset.assistantRecordId); return; }
+  const media = event.target.closest('[data-assistant-media-id]');
+  if (media) openAssistantMedia(media.dataset.assistantMediaId);
+});
 byId('refreshApp').addEventListener('click', async () => {
   const button = byId('refreshApp');
   button.classList.add('is-refreshing');

@@ -187,6 +187,12 @@ Resources:
             ApiId: !Ref SimjiApi
             Path: /auth/passkey/verify
             Method: POST
+        Assistant:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SimjiApi
+            Path: /assistant
+            Method: POST
         Records:
           Type: HttpApi
           Properties:

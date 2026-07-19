@@ -1125,6 +1125,7 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
     slots: [photoNeighbor(item, -1), item, photoNeighbor(item, 1)],
     settling: false,
     dragging: false,
+    mousePressed: false,
     ignoreClick: false,
     startX: 0,
     startY: 0,
@@ -1309,6 +1310,7 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
   reel.addEventListener('touchcancel', finishDrag, { passive: true });
   reel.addEventListener('pointerdown', (event) => {
     if (event.pointerType !== 'mouse' || event.button !== 0 || state.settling) return;
+    state.mousePressed = true;
     state.startX = event.clientX;
     state.startY = event.clientY;
     state.delta = 0;
@@ -1316,7 +1318,7 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
     reel.setPointerCapture?.(event.pointerId);
   });
   reel.addEventListener('pointermove', (event) => {
-    if (event.pointerType !== 'mouse' || state.settling) return;
+    if (event.pointerType !== 'mouse' || !state.mousePressed || state.settling) return;
     const primary = axis === 'horizontal' ? event.clientX - state.startX : event.clientY - state.startY;
     const cross = axis === 'horizontal' ? event.clientY - state.startY : event.clientX - state.startX;
     if (!state.dragging && Math.abs(primary) < Math.abs(cross) * 1.15) return;
@@ -1327,8 +1329,8 @@ function setupRealPhotoCarousel(item, photoUrl, axis) {
     setTransform(state.initialOffset + state.delta);
     event.preventDefault();
   });
-  reel.addEventListener('pointerup', (event) => { if (event.pointerType === 'mouse') finishDrag(); });
-  reel.addEventListener('pointercancel', (event) => { if (event.pointerType === 'mouse') finishDrag(); });
+  reel.addEventListener('pointerup', (event) => { if (event.pointerType === 'mouse') { state.mousePressed = false; finishDrag(); } });
+  reel.addEventListener('pointercancel', (event) => { if (event.pointerType === 'mouse') { state.mousePressed = false; finishDrag(); } });
 }
 function renderRealPhotoCarousel(item, photoUrl, axis) {
   const isLandscape = axis === 'horizontal';

@@ -130,19 +130,18 @@ async function recordFailedPin(member, guardKey) {
   const result = await ddb.send(new UpdateCommand({
     TableName: tableName,
     Key: { pk: `AUTH#${member}`, sk: guardKey },
-    UpdateExpression: 'SET failedAttempts = if_not_exists(failedAttempts, :zero) + :one, lastAttemptAt = :now, expiresAt = :expiresAt',
-    ExpressionAttributeValues: { ':zero': 0, ':one': 1, ':now': now, ':expiresAt': now + 1000 * 60 * 60 },
+    UpdateExpression: 'SET failedAttempts = if_not_exists(failedAttempts, :zero) + :one, lastAttemptAt = :now',
+    ExpressionAttributeValues: { ':zero': 0, ':one': 1, ':now': now },
     ReturnValues: 'ALL_NEW',
   }));
-  if (Number(result.Attributes?.failedAttempts || 0) < 5) return false;
+  if (Number(result.Attributes?.failedAttempts || 0) < 20) return false;
   await ddb.send(new UpdateCommand({
     TableName: tableName,
     Key: { pk: `AUTH#${member}`, sk: guardKey },
-    UpdateExpression: 'SET lockedUntil = :lockedUntil, failedAttempts = :zero, expiresAt = :expiresAt',
+    UpdateExpression: 'SET permanentlyLocked = :locked, lockedAt = :now REMOVE expiresAt',
     ExpressionAttributeValues: {
-      ':zero': 0,
-      ':lockedUntil': now + 1000 * 60 * 30,
-      ':expiresAt': now + 1000 * 60 * 60,
+      ':locked': true,
+      ':now': now,
     },
   }));
   return true;
@@ -230,13 +229,12 @@ async function publicRecord(record) {
 }
 
 async function authenticate(event) {
-  const { code = '' } = parseBody(event);
-  const normalized = String(code).replace(/\s/g, '');
-  const member = memberNames.find((name) => normalized.startsWith(name));
+  const { member: requestedMember = '', password = '' } = parseBody(event);
+  const member = String(requestedMember).trim();
   if (!member) return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
   const guard = await getPinGuard(member, 'SETUP_GUARD');
-  if (Number(guard?.lockedUntil || 0) > Date.now()) return response(429, { message: '보안을 위해 최초 등록을 잠시 쉬고 있어요. 30분 뒤에 다시 시도해 주세요.' });
-  if (!verifySetupCode(member, normalized)) {
+  if (guard?.permanentlyLocked) return response(423, { message: '20회 연속 실패로 잠겼습니다. 개발자에게 초기화를 요청해 주세요.' });
+  if (!memberNames.includes(member) || !verifySetupCode(member, `${member}${String(password).replace(/\s/g, '')}`)) {
     await recordFailedPin(member, 'SETUP_GUARD');
     return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
   }
@@ -266,7 +264,7 @@ async function authenticateWithPersonalPin(event) {
   const { member = '', pin = '' } = parseBody(event);
   if (!memberNames.includes(member)) return response(401, { message: '이름 또는 개인 PIN을 확인해 주세요.' });
   const guard = await getPinGuard(member, 'LOGIN_PIN_GUARD');
-  if (Number(guard?.lockedUntil || 0) > Date.now()) return response(429, { message: '보안을 위해 PIN 로그인을 잠시 쉬고 있어요. 30분 뒤에 다시 시도해 주세요.' });
+  if (guard?.permanentlyLocked) return response(423, { message: '20회 연속 실패로 잠겼습니다. 개발자에게 초기화를 요청해 주세요.' });
 
   const secret = await getPersonalPinSecret(member);
   const normalizedPin = String(pin || '').replace(/\D/g, '');

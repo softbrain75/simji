@@ -30,11 +30,14 @@
         <div class="login-actions" id="loginActions">
           <button class="login-passkey" id="passkeyLogin" type="button">지문·얼굴로 로그인</button>
           <button class="login-alt" id="openPinLogin" type="button">PIN으로 로그인</button>
+          <button class="login-text-button" id="openNewDevice" type="button">다른 기기에서 로그인</button>
           <button class="login-text-button" id="openSetup" type="button">처음 등록하기</button>
         </div>
         <form class="login-form" id="loginForm" hidden>
-          <label for="memberCode">최초 등록 · 멤버 이름 + 0717</label>
-          <input id="memberCode" inputmode="text" autocomplete="off" placeholder="예: 이름0717" required />
+          <label for="setupMember">아이디</label>
+          <input id="setupMember" inputmode="text" autocomplete="username" placeholder="멤버 이름" required />
+          <label for="setupPassword">초기 비밀번호</label>
+          <input id="setupPassword" type="password" inputmode="numeric" autocomplete="current-password" maxlength="4" placeholder="0717" required />
           <label for="setupPin">내가 사용할 PIN 6자리</label>
           <input id="setupPin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="숫자 6자리" required />
           <label for="setupPinConfirm">PIN 다시 입력</label>
@@ -44,6 +47,7 @@
           <button class="login-back" id="cancelSetup" type="button">돌아가기</button>
         </form>
         <form class="login-form" id="pinLoginForm" hidden>
+          <div id="pinMemberField" hidden><label for="pinLoginMember">아이디</label><input id="pinLoginMember" inputmode="text" autocomplete="username" placeholder="멤버 이름" /></div>
           <label for="pinLoginCode">내 PIN 6자리</label>
           <input id="pinLoginCode" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6" placeholder="숫자 6자리" required />
           <p class="login-error" id="pinLoginError" hidden>개인 PIN을 확인해 주세요.</p>

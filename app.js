@@ -1486,7 +1486,8 @@ function signOut(focus = true) {
   activeMember = '';
   byId('appShell').hidden = true;
   byId('loginScreen').hidden = false;
-  byId('memberCode').value = '';
+  byId('setupMember').value = '';
+  byId('setupPassword').value = '';
   byId('setupPin').value = '';
   byId('setupPinConfirm').value = '';
   byId('pinLoginCode').value = '';
@@ -1792,6 +1793,7 @@ function showLoginMode(mode = 'passkey') {
   byId('loginActions').hidden = selectedMode !== 'passkey';
   byId('loginForm').hidden = selectedMode !== 'setup';
   byId('pinLoginForm').hidden = selectedMode !== 'pin';
+  byId('pinMemberField').hidden = selectedMode !== 'pin' || members.includes(localStorage.getItem(deviceMemberStorageKey));
   byId('loginNote').hidden = selectedMode === 'setup';
   setLoginError();
   setPinLoginError();
@@ -1799,18 +1801,19 @@ function showLoginMode(mode = 'passkey') {
 
 byId('loginForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const code = byId('memberCode').value.replaceAll(' ', '');
+  const member = byId('setupMember').value.trim();
+  const password = byId('setupPassword').value.replace(/\D/g, '');
   const pin = byId('setupPin').value.replace(/\D/g, '');
   const confirmation = byId('setupPinConfirm').value.replace(/\D/g, '');
   const button = event.currentTarget.querySelector('button[type="submit"]');
-  if (!code) { setLoginError('멤버 이름과 최초 등록번호를 입력해 주세요.'); return; }
+  if (!members.includes(member) || password !== '0717') { setLoginError('아이디와 초기 비밀번호를 확인해 주세요.'); return; }
   if (!/^\d{6}$/.test(pin)) { setLoginError('개인 PIN은 숫자 6자리로 정해 주세요.'); return; }
   if (pin !== confirmation) { setLoginError('PIN 두 번 입력한 값이 같지 않아요.'); return; }
   button.disabled = true;
   button.textContent = '지문·얼굴 등록 준비 중…';
   try {
     assertPasskeySupported();
-    const enrollment = await api('/auth', { method: 'POST', body: { code }, authenticated: false });
+    const enrollment = await api('/auth', { method: 'POST', body: { member, password }, authenticated: false });
     button.textContent = '지문·얼굴로 등록 중…';
     const result = await registerPasskey(enrollment.enrollmentToken, pin);
     enterApp(result.member, result.token);
@@ -1827,7 +1830,7 @@ byId('loginForm').addEventListener('submit', async (event) => {
 
 byId('pinLoginForm').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const member = localStorage.getItem(deviceMemberStorageKey);
+  const member = localStorage.getItem(deviceMemberStorageKey) || byId('pinLoginMember').value.trim();
   const pin = byId('pinLoginCode').value.replace(/\D/g, '');
   const button = event.currentTarget.querySelector('button[type="submit"]');
   if (!members.includes(member)) { setPinLoginError('처음에는 지문·얼굴 인증 또는 최초 등록을 해 주세요.'); return; }
@@ -1868,6 +1871,7 @@ byId('passkeyLogin').addEventListener('click', async (event) => {
 });
 
 byId('openPinLogin').addEventListener('click', () => showLoginMode('pin'));
+byId('openNewDevice').addEventListener('click', () => { localStorage.removeItem(deviceMemberStorageKey); showLoginMode('pin'); });
 byId('openSetup').addEventListener('click', () => showLoginMode('setup'));
 byId('cancelSetup').addEventListener('click', () => showLoginMode(localStorage.getItem(loginMethodStorageKey) || 'passkey'));
 byId('cancelPinLogin').addEventListener('click', () => showLoginMode('passkey'));

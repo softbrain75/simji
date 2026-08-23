@@ -1982,7 +1982,7 @@ byId('loginForm').addEventListener('submit', async (event) => {
   const code = byId('loginCode').value.replace(/\s/g, '');
   const button = event.currentTarget.querySelector('button[type="submit"]');
   if (!members.some((member) => code === `${member}1234`)) {
-    setLoginError('비밀번호를 확인해 주세요. 예: 성호1234');
+    setLoginError('비밀번호를 확인해 주세요.');
     return;
   }
   button.disabled = true;

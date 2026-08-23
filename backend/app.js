@@ -232,7 +232,7 @@ async function authenticate(event) {
   const { code = '' } = parseBody(event);
   const normalizedCode = String(code || '').replace(/\s/g, '');
   const member = memberNames.find((name) => normalizedCode === `${name}1234`);
-  if (!member) return response(401, { message: '비밀번호를 확인해 주세요. 예: 성호1234' });
+  if (!member) return response(401, { message: '비밀번호를 확인해 주세요.' });
   return response(200, { member, token: createSession(member, 'password') });
 }
 

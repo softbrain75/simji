@@ -229,35 +229,11 @@ async function publicRecord(record) {
 }
 
 async function authenticate(event) {
-  const { member: requestedMember = '', password = '' } = parseBody(event);
-  const member = String(requestedMember).trim();
-  if (!member) return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
-  const guard = await getPinGuard(member, 'SETUP_GUARD');
-  if (guard?.permanentlyLocked) return response(423, { message: '20회 연속 실패로 잠겼습니다. 개발자에게 초기화를 요청해 주세요.' });
-  if (!memberNames.includes(member) || !verifySetupCode(member, `${member}${String(password).replace(/\s/g, '')}`)) {
-    await recordFailedPin(member, 'SETUP_GUARD');
-    return response(401, { message: '멤버 이름 또는 4자리 번호를 확인해 주세요.' });
-  }
-  await clearPinGuard(member, 'SETUP_GUARD');
-
-  const existing = await ddb.send(new QueryCommand({
-    TableName: tableName,
-    KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-    ExpressionAttributeValues: { ':pk': `AUTH#${member}`, ':prefix': 'PASSKEY#' },
-    Limit: 1,
-  }));
-  if ((existing.Items || []).length) return response(403, { message: '이 멤버는 이미 기기 등록을 마쳤습니다. 지문·얼굴 인증으로 로그인해 주세요.' });
-
-  const tokenId = crypto.randomUUID();
-  return response(200, {
-    member,
-    enrollmentToken: createSignedToken({
-      member,
-      purpose: 'passkey-enrollment',
-      tokenId,
-      exp: Date.now() + 1000 * 60 * 5,
-    }),
-  });
+  const { code = '' } = parseBody(event);
+  const normalizedCode = String(code || '').replace(/\s/g, '');
+  const member = memberNames.find((name) => normalizedCode === `${name}1234`);
+  if (!member) return response(401, { message: '비밀번호를 확인해 주세요. 예: 성호1234' });
+  return response(200, { member, token: createSession(member, 'password') });
 }
 
 async function authenticateWithPersonalPin(event) {

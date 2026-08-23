@@ -26,36 +26,14 @@
         <span class="login-mark">心</span>
         <p class="login-eyebrow">SIMJI CLUB</p>
         <h1 id="loginTitle">심지회<br />공동 장부</h1>
-        <p class="login-copy">앱을 열 때마다 안전하게 인증해요.<br />지문·얼굴 또는 내가 정한 PIN을 사용할 수 있어요.</p>
-        <div class="login-actions" id="loginActions">
-          <button class="login-passkey" id="passkeyLogin" type="button">지문·얼굴로 로그인</button>
-          <button class="login-alt" id="openPinLogin" type="button">PIN으로 로그인</button>
-          <button class="login-text-button" id="openNewDevice" type="button">다른 기기에서 로그인</button>
-          <button class="login-text-button" id="openSetup" type="button">처음 등록하기</button>
-        </div>
-        <form class="login-form" id="loginForm" hidden>
-          <label for="setupMember">아이디</label>
-          <input id="setupMember" inputmode="text" autocomplete="username" placeholder="멤버 이름" required />
-          <label for="setupPassword">초기 비밀번호</label>
-          <input id="setupPassword" type="password" inputmode="numeric" autocomplete="current-password" maxlength="4" placeholder="0717" required />
-          <label for="setupPin">내가 사용할 PIN 6자리</label>
-          <input id="setupPin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="숫자 6자리" required />
-          <label for="setupPinConfirm">PIN 다시 입력</label>
-          <input id="setupPinConfirm" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="숫자 6자리" required />
-          <p class="login-error" id="loginError" hidden>입력 내용을 확인해 주세요.</p>
-          <button type="submit">지문·얼굴과 PIN 등록 <span>→</span></button>
-          <button class="login-back" id="cancelSetup" type="button">돌아가기</button>
+        <p class="login-copy">모임 멤버 비밀번호만 입력하면<br />바로 공동 장부를 사용할 수 있어요.</p>
+        <form class="login-form login-form--simple" id="loginForm">
+          <label for="loginCode">비밀번호</label>
+          <input id="loginCode" type="password" inputmode="text" autocomplete="current-password" autocapitalize="off" spellcheck="false" placeholder="예: 성호1234" required />
+          <p class="login-error" id="loginError" hidden>비밀번호를 확인해 주세요.</p>
+          <button type="submit">로그인 <span>→</span></button>
         </form>
-        <form class="login-form" id="pinLoginForm" hidden>
-          <div id="pinMemberField" hidden><label for="pinLoginMember">아이디</label><input id="pinLoginMember" inputmode="text" autocomplete="username" placeholder="멤버 이름" /></div>
-          <label for="pinLoginCode">내 PIN 6자리</label>
-          <input id="pinLoginCode" type="password" inputmode="numeric" autocomplete="current-password" maxlength="6" placeholder="숫자 6자리" required />
-          <p class="login-error" id="pinLoginError" hidden>개인 PIN을 확인해 주세요.</p>
-          <button type="submit">PIN으로 로그인 <span>→</span></button>
-          <button class="login-alt" id="registerPasskeyFromPin" type="button">이 기기에 지문·얼굴 등록 <span>→</span></button>
-          <button class="login-back" id="cancelPinLogin" type="button">돌아가기</button>
-        </form>
-        <p class="login-note" id="loginNote">인증 정보는 저장하지 않고, 이 기기의 멤버만 기억합니다.</p>
+        <p class="login-note">멤버 이름 뒤에 <b>1234</b>를 붙여 입력해 주세요.<br />예: 성호1234</p>
       </div>
     </section>
 
@@ -246,6 +224,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="config.js"></script>
-    <script src="app.js?v=46"></script>
+    <script src="app.js?v=47"></script>
   </body>
 </html>
